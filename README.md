@@ -359,6 +359,16 @@ byte counts, SHA-256 of stdout and stderr, duration, and the enforcement report.
 itself is not stored. Appends take an `flock`, so several processes can share one log
 ([ADR 0003](docs/adr/0003-audit-hash-chain.md)).
 
+### Demos
+
+Recorded from real runs with [vhs](https://github.com/charmbracelet/vhs); each tape is in `docs/demo/`.
+
+The resolved policy and what this OS enforces for it.
+
+<p align="center">
+  <img src="docs/demo/inspect.gif" alt="The resolved policy and what this OS enforces for it" width="860">
+</p>
+
 ## Design decisions
 
 - [ADR 0001](docs/adr/0001-two-layer-enforcement.md): a decision engine for explainable
