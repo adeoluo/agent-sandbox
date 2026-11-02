@@ -2,3 +2,4 @@
 .sandbox-scratch/
 *.audit.jsonl
 __pycache__/
+dist/

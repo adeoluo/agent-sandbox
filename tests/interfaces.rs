@@ -67,13 +67,19 @@ fn run_denied_exits_126_with_reason() {
 }
 
 #[test]
-fn run_timeout_and_truncation_messages() {
-    let c = cli(
-        "[[exec]]\nname = \"sleep\"\n\n[[exec]]\nname = \"yes\"\n\n[limits]\ntimeout_ms = 200\nmax_output_bytes = 16\n",
-    );
+fn run_timeout_message_and_exit_code() {
+    let c = cli("[[exec]]\nname = \"sleep\"\n\n[limits]\ntimeout_ms = 200\n");
     let out = c.cmd("run").args(["--", "sleep", "10"]).output().unwrap();
     assert_eq!(out.status.code(), Some(124));
     assert!(String::from_utf8_lossy(&out.stderr).contains("timeout"));
+}
+
+#[test]
+fn run_output_truncation_keeps_the_cap() {
+    // A generous timeout so the output limit, not the timeout, ends the run even on a
+    // heavily loaded machine where process startup is slow.
+    let c =
+        cli("[[exec]]\nname = \"yes\"\n\n[limits]\ntimeout_ms = 20000\nmax_output_bytes = 16\n");
     let out = c.cmd("run").args(["--", "yes"]).output().unwrap();
     assert_eq!(out.stdout.len(), 16);
     assert!(String::from_utf8_lossy(&out.stderr).contains("truncated"));

@@ -370,8 +370,8 @@ impl Sandbox {
         }?;
         sweep_group(pgid);
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
-        let (stdout, stdout_bytes) = out_rx.recv_timeout(DRAIN_GRACE).unwrap_or_default();
-        let (stderr, stderr_bytes) = err_rx.recv_timeout(DRAIN_GRACE).unwrap_or_default();
+        let (stdout, stdout_bytes) = collect(&out_rx.0, &out_rx.1, DRAIN_GRACE);
+        let (stderr, stderr_bytes) = collect(&err_rx.0, &err_rx.1, DRAIN_GRACE);
         Ok(RunOutcome {
             decision: decision.clone(),
             executed: true,
@@ -501,28 +501,41 @@ fn sweep_group(pgid: libc::pid_t) {
     }
 }
 
+/// Bytes captured from one output stream so far, and the total number of bytes seen.
+type Captured = Arc<Mutex<(Vec<u8>, u64)>>;
+
+/// Reads a child's output stream on a background thread, keeping at most `cap` bytes.
+///
+/// Captured bytes are published to shared state as they arrive, so the caller can collect
+/// them even when the stream does not reach end of file within the drain grace period
+/// (for example on a slow machine after the process group is killed).
 fn read_capped<R: Read + Send + 'static>(
     pipe: Option<R>,
     cap: usize,
     kill_on_overflow: bool,
     pgid: libc::pid_t,
     overflow: Arc<AtomicBool>,
-) -> Receiver<(Vec<u8>, u64)> {
+) -> (Receiver<()>, Captured) {
     let (tx, rx) = mpsc::channel();
+    let captured: Captured = Arc::new(Mutex::new((Vec::new(), 0)));
+    let shared = Arc::clone(&captured);
     thread::spawn(move || {
-        let mut kept = Vec::new();
-        let mut total = 0u64;
         if let Some(mut pipe) = pipe {
             let mut chunk = vec![0u8; 64 * 1024];
             loop {
                 match pipe.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(n) => {
-                        total += n as u64;
-                        if kept.len() < cap {
-                            let take = (cap - kept.len()).min(n);
-                            kept.extend_from_slice(&chunk[..take]);
-                        }
+                        let total = {
+                            let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
+                            let (kept, total) = &mut *guard;
+                            *total += n as u64;
+                            if kept.len() < cap {
+                                let take = (cap - kept.len()).min(n);
+                                kept.extend_from_slice(&chunk[..take]);
+                            }
+                            *total
+                        };
                         if total > cap as u64
                             && !overflow.swap(true, Ordering::SeqCst)
                             && kill_on_overflow
@@ -535,7 +548,54 @@ fn read_capped<R: Read + Send + 'static>(
                 }
             }
         }
-        let _ = tx.send((kept, total));
+        let _ = tx.send(());
     });
-    rx
+    (rx, captured)
+}
+
+/// Waits up to `grace` for the reader to reach end of file, then returns whatever it captured.
+fn collect(done: &Receiver<()>, captured: &Captured, grace: Duration) -> (Vec<u8>, u64) {
+    let _ = done.recv_timeout(grace);
+    let guard = captured.lock().unwrap_or_else(|e| e.into_inner());
+    (guard.0.clone(), guard.1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stream that yields one chunk and then blocks, never reaching end of file.
+    struct StallsAfterFirstChunk {
+        sent: bool,
+    }
+
+    impl Read for StallsAfterFirstChunk {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.sent {
+                thread::sleep(Duration::from_secs(30));
+                return Ok(0);
+            }
+            self.sent = true;
+            let n = 32.min(buf.len());
+            buf[..n].fill(b'y');
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn captured_output_survives_a_late_end_of_file() {
+        let overflow = Arc::new(AtomicBool::new(false));
+        let (done, captured) = read_capped(
+            Some(StallsAfterFirstChunk { sent: false }),
+            16,
+            false,
+            0,
+            Arc::clone(&overflow),
+        );
+        thread::sleep(Duration::from_millis(50));
+        let (kept, total) = collect(&done, &captured, Duration::from_millis(100));
+        assert_eq!(kept, vec![b'y'; 16]);
+        assert_eq!(total, 32);
+        assert!(overflow.load(Ordering::SeqCst));
+    }
 }
