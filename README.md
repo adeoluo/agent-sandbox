@@ -198,6 +198,12 @@ agent-sandbox audit verify audit.jsonl
 
 ## Usage
 
+A real run: two requests denied by the coding-agent policy (a credential read and a network client), one allowed command run with an audit record, and the hash chain verified. Regenerate with `vhs docs/demo/sandbox.tape`.
+
+<p align="center">
+  <img src="docs/demo/sandbox.gif" alt="agent-sandbox denying a credential read and a network call, running an allowed command, and verifying the audit chain" width="860">
+</p>
+
 ### Policy reference
 
 A policy is a TOML (or JSON) file. Unknown keys are rejected so a typo cannot silently
