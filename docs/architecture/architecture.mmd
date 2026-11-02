@@ -5,55 +5,44 @@ flowchart LR
     classDef control  fill:#0EA5E9,stroke:#1E293B,color:#ffffff,stroke-width:1px;
     classDef obs      fill:#CBD5E1,stroke:#1E293B,color:#1E293B,stroke-width:1px;
 
-    Agent(["Agent tool call<br/>argv, read, write (untrusted)"]):::edge
-
-    subgraph Interfaces["Interfaces (clap CLI, stdio, library)"]
+    subgraph Interfaces["Interfaces"]
         direction TB
-        CLI["CLI<br/>run, check, inspect, audit verify"]:::edge
-        Stdio["serve<br/>JSON Lines over stdio"]:::edge
-        Lib["Sandbox API<br/>check, run, read_file, write_file"]:::core
+        Agent([Agent tool call]):::edge
+        CLI["CLI<br/>run, check, inspect"]:::edge
+        Stdio["serve<br/>JSON Lines on stdio"]:::edge
+        Lib["Sandbox API<br/>run, read, write"]:::core
+        CLI ~~~ Stdio ~~~ Agent --> Lib
     end
 
-    subgraph Decision["Decision layer (before anything runs)"]
+    subgraph Decision["Decision layer"]
         direction TB
-        PolicyFile["Policy file<br/>TOML or JSON, deny_unknown_fields"]:::control
-        Compile["Policy compiler<br/>validate, expand, resolve roots, SHA-256"]:::control
-        Engine{"Engine::decide<br/>allowlist, arg patterns,<br/>filesystem, network"}:::core
-        Paths["Path resolver<br/>symlink-aware, deceptive text"]:::control
-        Patterns["Glob matcher<br/>argument and env patterns"]:::control
+        Policy["Policy file<br/>TOML or JSON"]:::control
+        Compile["Policy compiler<br/>validate, resolve"]:::control
+        Engine{"Engine::decide<br/>ordered checks"}:::core
+        Paths["Path resolver<br/>symlink-aware"]:::control
+        Patterns["Glob matcher<br/>args and env"]:::control
+        Policy --> Compile --> Engine
+        Engine -.-> Paths ~~~ Patterns
     end
 
-    subgraph Boundary["Child process boundary (after allow)"]
+    subgraph Boundary["Process boundary"]
         direction TB
-        Supervisor["Spawn and supervise<br/>clean env, own process group"]:::core
-        Limits["rlimits, timeout, output caps<br/>killpg on violation"]:::control
-        OS["OS backend<br/>Seatbelt on macOS, Landlock on Linux"]:::control
-        Child(["Command<br/>resolved absolute binary"]):::edge
+        Supervisor["Spawn, supervise<br/>own process group"]:::core
+        Limits["rlimits, timeout<br/>output caps"]:::control
+        OS["OS backend<br/>Seatbelt or Landlock"]:::control
+        Child(["Command<br/>absolute binary"]):::edge
+        Supervisor --> Limits --> OS --> Child
     end
 
-    subgraph Outputs["Audit and outputs"]
+    subgraph Audit["Audit and outputs"]
         direction TB
-        Audit[("Audit log<br/>JSON Lines, SHA-256 chain, flock")]:::data
-        Outcome["Run outcome<br/>exit, signal, capped output,<br/>enforcement report"]:::obs
-        Verify["audit verify<br/>chain and head hash check"]:::obs
+        Outcome["Outcome<br/>exit, signal, output"]:::obs
+        Log[("Audit log<br/>SHA-256 chain")]:::data
+        Verify["audit verify<br/>chain + head hash"]:::obs
+        Outcome --> Log --> Verify
     end
 
-    Agent -->|request| CLI
-    Agent -->|request| Stdio
-    Agent -->|request| Lib
-    CLI --> Lib
-    Stdio --> Lib
-    PolicyFile -.->|load| Compile
-    Engine -.->|reads| Compile
-    Lib -->|Request| Engine
-    Engine -.-> Paths
-    Engine -.-> Patterns
-    Engine -->|deny| Audit
-    Engine -->|allow run| Supervisor
-    Engine -->|allow<br/>read, write| Outcome
-    Supervisor -.->|apply| Limits
-    Supervisor -.->|apply| OS
-    Supervisor -->|spawn| Child
-    Child -->|exit, output| Outcome
-    Outcome -->|record| Audit
-    Verify -.->|check chain| Audit
+    Interfaces -->|request| Decision
+    Decision -->|allow| Boundary
+    Decision -->|deny| Audit
+    Boundary -->|outcome| Audit
