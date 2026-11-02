@@ -1,4 +1,4 @@
-flowchart TD
+flowchart LR
     classDef edge     fill:#F59E0B,stroke:#1E293B,color:#1E293B,stroke-width:1px;
     classDef core     fill:#6366F1,stroke:#1E293B,color:#ffffff,stroke-width:1px;
     classDef data     fill:#10B981,stroke:#1E293B,color:#ffffff,stroke-width:1px;
@@ -44,16 +44,16 @@ flowchart TD
     CLI --> Lib
     Stdio --> Lib
     PolicyFile -.->|load| Compile
-    Compile -.->|CompiledPolicy| Engine
+    Engine -.->|reads| Compile
     Lib -->|Request| Engine
     Engine -.-> Paths
     Engine -.-> Patterns
-    Engine -->|deny: rule and reason| Audit
-    Engine -->|allow run: binary, cwd| Supervisor
-    Engine -->|allow read or write:<br/>O_NOFOLLOW, size caps| Outcome
-    Supervisor --> Limits
-    Limits --> OS
-    OS --> Child
-    Child -->|exit status and output| Outcome
-    Outcome -->|record with output hashes| Audit
-    Audit -.-> Verify
+    Engine -->|deny| Audit
+    Engine -->|allow run| Supervisor
+    Engine -->|allow<br/>read, write| Outcome
+    Supervisor -.->|apply| Limits
+    Supervisor -.->|apply| OS
+    Supervisor -->|spawn| Child
+    Child -->|exit, output| Outcome
+    Outcome -->|record| Audit
+    Verify -.->|check chain| Audit
