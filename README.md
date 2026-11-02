@@ -369,6 +369,12 @@ The resolved policy and what this OS enforces for it.
   <img src="docs/demo/inspect.gif" alt="The resolved policy and what this OS enforces for it" width="860">
 </p>
 
+File-operation checks and a dry run with the full decision as JSON.
+
+<p align="center">
+  <img src="docs/demo/files.gif" alt="File-operation checks and a dry run with the full decision as JSON" width="860">
+</p>
+
 ## Design decisions
 
 - [ADR 0001](docs/adr/0001-two-layer-enforcement.md): a decision engine for explainable
