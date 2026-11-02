@@ -1,0 +1,37 @@
+---
+title: agent-sandbox
+---
+flowchart LR
+    classDef external fill:#F59E0B,stroke:#1E293B,color:#1E293B,stroke-width:1px;
+    classDef core     fill:#6366F1,stroke:#1E293B,color:#ffffff,stroke-width:1px;
+    classDef data     fill:#10B981,stroke:#1E293B,color:#ffffff,stroke-width:1px;
+    classDef danger   fill:#EF4444,stroke:#1E293B,color:#ffffff,stroke-width:1px;
+
+    Agent([Agent tool call<br/>argv, read, write]):::external
+    Policy[(Policy file<br/>TOML or JSON)]:::data
+
+    subgraph Front["Interfaces"]
+        direction TB
+        CLI["CLI<br/>run | check | audit verify | inspect"]:::core
+        Stdio["JSON Lines over stdio<br/>serve"]:::core
+        Lib["Rust library<br/>Sandbox, Engine"]:::core
+    end
+
+    Engine{"Decision engine<br/>allowlist, arg patterns,<br/>path resolution, network"}:::core
+
+    subgraph Boundary["Child process boundary"]
+        direction TB
+        Limits["rlimits, timeout,<br/>output caps, process group"]:::danger
+        OS["OS backend<br/>Seatbelt on macOS<br/>Landlock on Linux"]:::danger
+        Child(["Command"]):::external
+    end
+
+    Audit[(Audit log<br/>JSONL, SHA-256 chain)]:::data
+
+    Agent --> CLI & Stdio & Lib
+    Policy -->|compile and resolve| Engine
+    CLI & Stdio & Lib -->|request| Engine
+    Engine -->|deny: rule and reason| Audit
+    Engine -->|allow: resolved binary, cwd| Limits
+    Limits --> OS --> Child
+    Child -->|exit, signal, output hashes| Audit

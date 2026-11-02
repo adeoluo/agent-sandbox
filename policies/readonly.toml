@@ -1,0 +1,16 @@
+# The smallest useful profile: list and read files in the workspace.
+name = "readonly"
+
+[filesystem]
+read_roots = ["{workspace}", "/usr", "/bin", "/lib", "/lib64", "/etc", "/System"]
+denied_paths = ["~/.ssh", "{workspace}/.env"]
+
+[limits]
+timeout_ms = 5000
+max_output_bytes = 65536
+
+[[exec]]
+name = "ls"
+
+[[exec]]
+name = "cat"

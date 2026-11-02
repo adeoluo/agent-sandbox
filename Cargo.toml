@@ -1,0 +1,44 @@
+[package]
+name = "agent-sandbox"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A policy-based sandbox for running AI agent tool calls with declarative rules, resource limits, and a tamper-evident audit log."
+license = "MIT"
+authors = ["Adeolu Ogunnoiki <adeoluo@hotmail.com>"]
+repository = "https://github.com/adeoluo/agent-sandbox"
+readme = "README.md"
+keywords = ["sandbox", "security", "agents", "llm", "policy"]
+categories = ["command-line-utilities", "os::unix-apis"]
+
+[lib]
+name = "agent_sandbox"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-sandbox"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2.191"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+toml = "1.1.8"
+
+[dev-dependencies]
+criterion = "0.8.2"
+proptest = "1.12.0"
+tempfile = "3.27.0"
+
+[[bench]]
+name = "sandbox"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

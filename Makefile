@@ -1,0 +1,51 @@
+.PHONY: help build release fmt lint test coverage bench latency inspect demo diagram clean all
+
+# Keep test temp directories inside the project.
+export TMPDIR := $(CURDIR)/target/tmp
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+	  awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+
+build: ## Debug build
+	cargo build
+
+release: ## Optimized build at target/release/agent-sandbox
+	cargo build --release
+
+fmt: ## Format the code
+	cargo fmt --all
+
+lint: ## Format check and clippy (warnings are errors)
+	cargo fmt --all --check
+	cargo clippy --all-targets -- -D warnings
+
+test: ## Run every test
+	@mkdir -p $(TMPDIR)
+	cargo test --all-targets
+
+coverage: ## Line coverage with an 85 percent gate (needs cargo-llvm-cov)
+	@mkdir -p $(TMPDIR)
+	cargo llvm-cov --summary-only --fail-under-lines 85
+
+bench: ## Criterion benchmarks
+	cargo bench --bench sandbox
+
+latency: ## Percentile table used in the README
+	cargo run --release --example latency 2000
+
+inspect: ## Show what this OS enforces for the sample policy
+	cargo run --quiet -- inspect --policy policies/coding-agent.toml
+
+demo: release ## Python client over the stdio protocol
+	python3 examples/python_client.py target/release/agent-sandbox policies/coding-agent.toml
+
+diagram: ## Render the architecture diagram to SVG (needs mmdc)
+	npx -y @mermaid-js/mermaid-cli -i docs/architecture/architecture.mmd -o docs/architecture/architecture.svg \
+	     -c mermaid.config.json -b transparent
+
+clean: ## Remove build output and scratch directories
+	cargo clean
+	rm -rf .sandbox-scratch
+
+all: lint test ## Local gate (mirrors CI)
