@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build every platform archive in CI, then upload them to the release as the maintainer.
+# Build every platform archive in CI, then upload them to the release.
 #   scripts/publish-binaries.sh v0.1.0
 # Runs the "Release binaries" workflow for the tag, waits for it, downloads the artifacts,
 # writes checksums.txt for all archives, and uploads with --clobber (replacing a

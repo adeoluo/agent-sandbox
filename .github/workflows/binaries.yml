@@ -1,8 +1,7 @@
 name: Release binaries
 
-# Builds release archives for every platform as workflow artifacts. Nothing is published
-# from CI: scripts/publish-binaries.sh downloads the artifacts and uploads them to the
-# GitHub release as the maintainer.
+# Builds release archives for every platform as workflow artifacts;
+# scripts/publish-binaries.sh downloads them and uploads them to the GitHub release.
 on:
   workflow_dispatch:
     inputs:
