@@ -1,0 +1,32 @@
+# Agent Sandbox
+
+> A policy-based sandbox for AI agent tool calls: declarative rules for commands, arguments, paths, environment, network, and resources, with explained decisions, OS-level enforcement where available, and a tamper-evident audit log.
+
+Languages: Rust. License: MIT. Source: https://github.com/adeoluo/agent-sandbox
+
+## Docs
+
+- [README](https://github.com/adeoluo/agent-sandbox/blob/main/README.md): motivation, architecture, results, quickstart, usage, design decisions, testing, limitations, roadmap
+- [AGENTS.md](https://github.com/adeoluo/agent-sandbox/blob/main/AGENTS.md): layout, commands and conventions for changing the code
+- [Architecture diagram](https://github.com/adeoluo/agent-sandbox/blob/main/docs/architecture/architecture.mmd): Mermaid source of the component diagram
+- [Architecture](https://github.com/adeoluo/agent-sandbox/blob/main/docs/ARCHITECTURE.md)
+- [ADR 0001: Two enforcement layers, a decision engine and an OS backend](https://github.com/adeoluo/agent-sandbox/blob/main/docs/adr/0001-two-layer-enforcement.md)
+- [ADR 0002: Resolve paths component by component, following symlinks before `..`](https://github.com/adeoluo/agent-sandbox/blob/main/docs/adr/0002-path-resolution.md)
+- [ADR 0003: JSON Lines audit log with a SHA-256 hash chain](https://github.com/adeoluo/agent-sandbox/blob/main/docs/adr/0003-audit-hash-chain.md)
+- [ADR 0004: Seatbelt on macOS, Landlock on Linux, no namespaces in v0.1](https://github.com/adeoluo/agent-sandbox/blob/main/docs/adr/0004-os-backends.md)
+- [Changelog](https://github.com/adeoluo/agent-sandbox/blob/main/CHANGELOG.md): release history
+
+## Source
+
+- [src/audit.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/audit.rs): Append-only JSON Lines audit log with a SHA-256 hash chain.
+- [src/engine.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/engine.rs): The decision engine: evaluates a request against a compiled policy and returns an allow/deny decision naming the rule that produced it.
+- [src/isolation/linux.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/isolation/linux.rs): Landlock ruleset construction (Linux 5.13+), using raw syscalls.
+- [src/isolation/macos.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/isolation/macos.rs): Seatbelt profile generation for `sandbox-exec` (macOS).
+- [src/isolation/mod.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/isolation/mod.rs): OS-level isolation backends.
+- [src/lib.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/lib.rs): # agent-sandbox A policy-based sandbox for running AI agent tool calls.
+- [src/limits.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/limits.rs): Resource limits applied in the child between `fork` and `exec`, plus the process accounting helpers they need.
+- [src/paths.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/paths.rs): Path handling: deceptive-character checks, placeholder expansion, and symlink-aware resolution that defeats `..` and symlink escapes.
+- [src/pattern.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/pattern.rs): A small, linear-time glob matcher used for argument and environment patterns.
+- [src/policy.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/policy.rs): Declarative policy: the on-disk schema (`Policy`) and its resolved form (`CompiledPolicy`).
+- [src/sandbox.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/sandbox.rs): The sandbox: decides, executes under the policy, supervises, and audits.
+- [src/server.rs](https://github.com/adeoluo/agent-sandbox/blob/main/src/server.rs): JSON Lines over stdio, so agents written in any language can call the sandbox.

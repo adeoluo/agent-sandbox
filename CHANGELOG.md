@@ -1,19 +1,27 @@
 # Changelog
 
-## v0.1.0 (2026-11-01)
+All notable changes to this project are documented here. The file is generated
+from Conventional Commits by [git-cliff](https://git-cliff.org) when a release is cut
+with `make cut-release`.
 
-First release.
+## Unreleased
 
-- Declarative TOML or JSON policies: executable allowlist with argument patterns, global
-  denied arguments and executables, read, writable, and denied paths, scratch directory,
-  environment allowlist, network mode, resource limits, isolation mode.
-- Decision engine returning the deciding rule and a reason; symlink-aware path
-  resolution; rejection of deceptive Unicode.
-- Execution with rlimits (CPU, address space on Linux, processes, file size, open files),
-  wall-clock timeout, output caps, process-group cleanup, and an RSS watchdog on macOS.
-- OS backends: Seatbelt via `sandbox-exec` on macOS; Landlock (filesystem, and TCP from
-  ABI 4) on Linux.
-- Hash-chained JSON Lines audit log with `audit verify` and `--expect-head`.
-- CLI (`run`, `check`, `audit verify`, `serve`, `inspect`), Rust library, JSON Lines
-  stdio protocol, and a Python client example.
-- 92 tests including property tests and an adversarial suite; benchmarks.
+### Documentation
+
+- Vertical layered architecture diagram
+- Horizontal layered architecture diagram
+- Compact horizontal architecture diagram
+
+## [0.1.0] 2026-11-02
+
+### Features
+
+- Agent-sandbox v0.1.0 (#1)
+
+### Build and CI
+
+- Run CodeQL on main and on a weekly schedule only
+
+### Maintenance
+
+- Initial commit with license and readme stub

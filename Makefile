@@ -1,4 +1,4 @@
-.PHONY: help build release fmt lint test coverage bench latency inspect demo diagram clean all
+.PHONY: help build release fmt lint test coverage bench latency inspect demo diagram clean all changelog cut-release
 
 # Keep test temp directories inside the project.
 export TMPDIR := $(CURDIR)/target/tmp
@@ -49,3 +49,9 @@ clean: ## Remove build output and scratch directories
 	rm -rf .sandbox-scratch
 
 all: lint test ## Local gate (mirrors CI)
+
+changelog: ## Regenerate CHANGELOG.md from Conventional Commits (git-cliff)
+	git cliff --output CHANGELOG.md && perl -0pi -e 's/\n+\z/\n/' CHANGELOG.md
+
+cut-release: ## Cut a release locally: version bump, changelog, tag, GitHub release (RELEASE_VERSION=vX.Y.Z optional)
+	scripts/release.sh $(RELEASE_VERSION)
