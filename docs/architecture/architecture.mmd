@@ -1,37 +1,59 @@
----
-title: agent-sandbox
----
-flowchart LR
-    classDef external fill:#F59E0B,stroke:#1E293B,color:#1E293B,stroke-width:1px;
+flowchart TD
+    classDef edge     fill:#F59E0B,stroke:#1E293B,color:#1E293B,stroke-width:1px;
     classDef core     fill:#6366F1,stroke:#1E293B,color:#ffffff,stroke-width:1px;
     classDef data     fill:#10B981,stroke:#1E293B,color:#ffffff,stroke-width:1px;
-    classDef danger   fill:#EF4444,stroke:#1E293B,color:#ffffff,stroke-width:1px;
+    classDef control  fill:#0EA5E9,stroke:#1E293B,color:#ffffff,stroke-width:1px;
+    classDef obs      fill:#CBD5E1,stroke:#1E293B,color:#1E293B,stroke-width:1px;
 
-    Agent([Agent tool call<br/>argv, read, write]):::external
-    Policy[(Policy file<br/>TOML or JSON)]:::data
+    Agent(["Agent tool call<br/>argv, read, write (untrusted)"]):::edge
 
-    subgraph Front["Interfaces"]
+    subgraph Interfaces["Interfaces (clap CLI, stdio, library)"]
         direction TB
-        CLI["CLI<br/>run | check | audit verify | inspect"]:::core
-        Stdio["JSON Lines over stdio<br/>serve"]:::core
-        Lib["Rust library<br/>Sandbox, Engine"]:::core
+        CLI["CLI<br/>run, check, inspect, audit verify"]:::edge
+        Stdio["serve<br/>JSON Lines over stdio"]:::edge
+        Lib["Sandbox API<br/>check, run, read_file, write_file"]:::core
     end
 
-    Engine{"Decision engine<br/>allowlist, arg patterns,<br/>path resolution, network"}:::core
-
-    subgraph Boundary["Child process boundary"]
+    subgraph Decision["Decision layer (before anything runs)"]
         direction TB
-        Limits["rlimits, timeout,<br/>output caps, process group"]:::danger
-        OS["OS backend<br/>Seatbelt on macOS<br/>Landlock on Linux"]:::danger
-        Child(["Command"]):::external
+        PolicyFile["Policy file<br/>TOML or JSON, deny_unknown_fields"]:::control
+        Compile["Policy compiler<br/>validate, expand, resolve roots, SHA-256"]:::control
+        Engine{"Engine::decide<br/>allowlist, arg patterns,<br/>filesystem, network"}:::core
+        Paths["Path resolver<br/>symlink-aware, deceptive text"]:::control
+        Patterns["Glob matcher<br/>argument and env patterns"]:::control
     end
 
-    Audit[(Audit log<br/>JSONL, SHA-256 chain)]:::data
+    subgraph Boundary["Child process boundary (after allow)"]
+        direction TB
+        Supervisor["Spawn and supervise<br/>clean env, own process group"]:::core
+        Limits["rlimits, timeout, output caps<br/>killpg on violation"]:::control
+        OS["OS backend<br/>Seatbelt on macOS, Landlock on Linux"]:::control
+        Child(["Command<br/>resolved absolute binary"]):::edge
+    end
 
-    Agent --> CLI & Stdio & Lib
-    Policy -->|compile and resolve| Engine
-    CLI & Stdio & Lib -->|request| Engine
+    subgraph Outputs["Audit and outputs"]
+        direction TB
+        Audit[("Audit log<br/>JSON Lines, SHA-256 chain, flock")]:::data
+        Outcome["Run outcome<br/>exit, signal, capped output,<br/>enforcement report"]:::obs
+        Verify["audit verify<br/>chain and head hash check"]:::obs
+    end
+
+    Agent -->|request| CLI
+    Agent -->|request| Stdio
+    Agent -->|request| Lib
+    CLI --> Lib
+    Stdio --> Lib
+    PolicyFile -.->|load| Compile
+    Compile -.->|CompiledPolicy| Engine
+    Lib -->|Request| Engine
+    Engine -.-> Paths
+    Engine -.-> Patterns
     Engine -->|deny: rule and reason| Audit
-    Engine -->|allow: resolved binary, cwd| Limits
-    Limits --> OS --> Child
-    Child -->|exit, signal, output hashes| Audit
+    Engine -->|allow run: binary, cwd| Supervisor
+    Engine -->|allow read or write:<br/>O_NOFOLLOW, size caps| Outcome
+    Supervisor --> Limits
+    Limits --> OS
+    OS --> Child
+    Child -->|exit status and output| Outcome
+    Outcome -->|record with output hashes| Audit
+    Audit -.-> Verify
