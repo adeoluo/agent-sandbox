@@ -1,0 +1,6 @@
+{
+  "name": "readonly-json",
+  "filesystem": { "read_roots": ["{workspace}", "/usr", "/bin", "/lib", "/lib64", "/etc", "/System"] },
+  "limits": { "timeout_ms": 5000 },
+  "exec": [{ "name": "ls" }, { "name": "cat" }]
+}

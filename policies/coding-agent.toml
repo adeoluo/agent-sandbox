@@ -1,0 +1,100 @@
+# A profile for a coding agent working inside one repository.
+name = "coding-agent"
+description = "Read the workspace and system tools, write only to the scratch directory, no network."
+
+[filesystem]
+# System trees are listed for both macOS and Linux; roots that do not exist are skipped.
+read_roots = [
+  "{workspace}",
+  "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc",
+  "/opt/homebrew", "/System", "/Library/Frameworks", "/private/var/db/timezone",
+]
+writable_roots = []
+scratch_dir = "{workspace}/.sandbox-scratch"
+denied_paths = [
+  "~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh", "~/.netrc", "~/.docker",
+  "/etc/shadow", "/etc/sudoers",
+  "{workspace}/.env", "{workspace}/.git/config",
+]
+
+[network]
+mode = "deny"
+
+[env]
+allow = ["LANG", "LC_*", "TERM", "TZ"]
+path = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+[env.set]
+HOME = "{scratch}"
+
+[limits]
+timeout_ms = 10000
+cpu_seconds = 10
+memory_bytes = 1073741824
+max_output_bytes = 1048576
+max_processes = 64
+max_file_size_bytes = 104857600
+max_open_files = 256
+
+[isolation]
+mode = "auto"
+
+[deny]
+args = ["--no-preserve-root"]
+executables = ["sudo", "su", "doas", "chmod", "chown", "dd", "mkfs", "mount"]
+
+[[exec]]
+name = "ls"
+
+[[exec]]
+name = "cat"
+
+[[exec]]
+name = "head"
+
+[[exec]]
+name = "tail"
+
+[[exec]]
+name = "wc"
+
+[[exec]]
+name = "grep"
+
+[[exec]]
+name = "find"
+args_deny = ["-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint*", "-fls"]
+
+[[exec]]
+name = "echo"
+
+[[exec]]
+name = "pwd"
+
+[[exec]]
+name = "diff"
+
+[[exec]]
+name = "git"
+args_allow = ["status", "diff", "log", "show", "-*", "--*", "*"]
+args_deny = ["push", "fetch", "pull", "clone", "remote", "config", "-c", "--exec-path*", "--upload-pack*"]
+
+[[exec]]
+name = "mkdir"
+writes = true
+
+[[exec]]
+name = "touch"
+writes = true
+
+[[exec]]
+name = "rm"
+writes = true
+
+[[exec]]
+name = "cp"
+writes = true
+
+[[exec]]
+name = "mv"
+writes = true
