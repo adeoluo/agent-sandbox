@@ -38,13 +38,17 @@ enforced only by argument inspection.
   <img src="docs/architecture/architecture.svg" alt="Architecture diagram" width="860">
 </p>
 
+<sub>Legend: amber = entry points and external systems, indigo = core logic, green = data and state, blue = validation and control, grey = observability and outputs.</sub>
+
 An agent reaches the sandbox through the CLI, the JSON Lines stdio protocol, or the Rust
-library. The decision engine evaluates each request against the compiled policy; denials
-are logged with their rule, and allowed commands run inside the child process boundary.
-Indigo marks the decision path, red the process boundary, green data at rest, and amber
-anything outside the sandbox. Source: [`docs/architecture/architecture.mmd`](docs/architecture/architecture.mmd);
-the module walkthrough and request sequence diagram are in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+library, which all call the same `Sandbox` API. The decision engine evaluates each request against
+the compiled policy, resolving every path-like argument and matching argument patterns; a denial
+is written to the audit log with its rule and reason. Allowed file reads and writes happen in
+process with `O_NOFOLLOW` and size caps, and allowed commands run inside the child process
+boundary under rlimits, a timeout, output caps, and the OS backend. Every outcome is appended to a
+SHA-256 chained audit log that `audit verify` can check. Source:
+[`docs/architecture/architecture.mmd`](docs/architecture/architecture.mmd); the module walkthrough
+and request sequence diagram are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 Two layers enforce the policy ([ADR 0001](docs/adr/0001-two-layer-enforcement.md)):
 
