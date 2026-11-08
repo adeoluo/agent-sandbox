@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Agent Sandbox"
+abstract: "A policy-based sandbox for running AI agent tool calls with declarative rules, resource limits, and a tamper-evident audit log."
+authors:
+  - family-names: "Ogunnoiki"
+    given-names: "Adeolu"
+version: "0.1.1"
+date-released: "2026-11-02"
+license: MIT
+repository-code: "https://github.com/adeoluo/agent-sandbox"
+url: "https://github.com/adeoluo/agent-sandbox"
+keywords:
+  - "ai-agents"
+  - "cli"
+  - "llm"
+  - "process-isolation"
+  - "rust"
+  - "sandbox"
+  - "security"
+  - "agent-security"
+  - "ai-safety"
+  - "sandboxing"
