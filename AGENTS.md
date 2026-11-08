@@ -13,6 +13,7 @@ A policy-based sandbox for AI agent tool calls: declarative rules for commands, 
 - `docs/`: documentation, architecture diagram source and render, design records
 - `examples/`: runnable examples and sample configuration
 - `policies/`: sandbox policy files used by examples and tests
+- `scripts/`: maintenance scripts (release, assets, data)
 - `src/`: library and service source
 - `tests/`: test suite
 

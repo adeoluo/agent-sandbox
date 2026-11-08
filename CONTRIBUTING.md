@@ -2,7 +2,7 @@
 
 ## Development setup
 
-You need a stable Rust toolchain (1.85 or newer) on macOS or Linux.
+You need a stable Rust toolchain (1.99 or newer) on macOS or Linux.
 
 ```bash
 make build     # debug build
