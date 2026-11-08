@@ -29,8 +29,7 @@ do that the per-OS table in the README lists as not enforced; behavior with no O
 ## Controls in this repository
 
 - **SAST:** CodeQL for Rust (`.github/workflows/codeql.yml`).
-- **Dependencies:** versions are pinned in the lockfile; updates are reviewed and applied by hand.
-  versions pinned in `Cargo.lock`.
+- **Dependencies:** versions are pinned in `Cargo.lock`; updates are reviewed and applied by hand.
 - **Lints:** `cargo clippy --all-targets -D warnings` on Linux and macOS.
 - **Unsafe code:** limited to libc and syscall wrappers in `limits.rs`, `audit.rs`,
   `sandbox.rs`, and `isolation/linux.rs`, each with a `SAFETY` comment.

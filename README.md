@@ -425,6 +425,21 @@ Line coverage (`cargo llvm-cov`): **95.2 percent on macOS** (local) and **93.2 p
 Linux** (CI, gate 85 percent). The lowest file is `isolation/mod.rs` at 76 to 79 percent,
 because each OS only executes its own backend branch.
 
+## Responsible AI
+
+- **Threat model:** [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) lists the assets, trust
+  boundaries, threats, mitigations and residual risk.
+- **Standards:** the [threat model](docs/THREAT_MODEL.md#standards-mapping) maps every threat to
+  the OWASP Top 10 for Agentic Applications 2026 (for example ASI02 Tool Misuse and
+  Exploitation, ASI03 Identity and Privilege Abuse and ASI05 Unexpected Code Execution), the
+  OWASP Top 10 for LLM Applications 2026 (LLM03:2026 Excessive Agency, LLM06:2026 Unbounded
+  Consumption) and MITRE ATLAS v2026.10 (for example AML.T0053 AI Agent Tool Invocation and
+  AML.T0086 Exfiltration via AI Agent Tool Invocation).
+- **Inert tests:** the adversarial suite uses reserved `.example` hosts, a local TCP listener
+  and fixture directories; commands the engine denies are never executed.
+- **Scope:** the sandbox limits what a manipulated agent can do; it does not detect prompt
+  injection and does not replace human review of consequential actions.
+
 ## Limitations
 
 Stated plainly, because a sandbox that overclaims is worse than none:
