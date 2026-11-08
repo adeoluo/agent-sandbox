@@ -1,0 +1,28 @@
+sequenceDiagram
+    autonumber
+    participant A as Agent
+    participant S as Sandbox (sandbox.rs)
+    participant E as Engine (engine.rs)
+    participant I as Isolation (isolation/)
+    participant C as Child process
+    participant L as AuditLog (audit.rs)
+
+    A->>S: run(argv, cwd, stdin)
+    S->>E: decide(Exec)
+    E-->>S: Decision {allowed, rule, reason, program, cwd}
+    alt denied or dry run
+        S->>L: append {request, decision, executed: false}
+        S-->>A: RunOutcome (not executed)
+    else allowed
+        S->>I: prepare(policy, program)
+        I-->>S: Seatbelt profile or Landlock ruleset, Enforcement report
+        S->>C: spawn: env_clear, process_group(0), pre_exec(setrlimit, landlock_restrict_self)
+        par supervision
+            S->>C: wall-clock deadline, RSS watchdog (macOS)
+        and output
+            C-->>S: stdout/stderr readers, capped, kill on overflow
+        end
+        S->>C: killpg sweep until the group is empty
+        S->>L: append {request, decision, outcome summary, enforcement}
+        S-->>A: RunOutcome
+    end
