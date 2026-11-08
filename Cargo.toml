@@ -1,6 +1,6 @@
 [package]
 name = "agent-sandbox"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.99"
 description = "A policy-based sandbox for running AI agent tool calls with declarative rules, resource limits, and a tamper-evident audit log."
