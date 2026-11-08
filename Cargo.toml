@@ -2,7 +2,7 @@
 name = "agent-sandbox"
 version = "0.1.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.99"
 description = "A policy-based sandbox for running AI agent tool calls with declarative rules, resource limits, and a tamper-evident audit log."
 license = "MIT"
 authors = ["Adeolu Ogunnoiki <adeoluo@hotmail.com>"]
@@ -27,7 +27,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 sha2 = "0.11.1"
 thiserror = "2.0.21"
-toml = "1.1.8"
+toml = "1.2.1"
 
 [dev-dependencies]
 criterion = "0.8.2"

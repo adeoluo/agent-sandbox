@@ -154,7 +154,7 @@ skipped.
 
 ### Install
 
-From source (Rust 1.85 or newer):
+From source (Rust 1.99 or newer):
 
 ```bash
 git clone https://github.com/adeoluo/agent-sandbox && cd agent-sandbox
