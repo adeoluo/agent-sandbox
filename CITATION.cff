@@ -22,3 +22,5 @@ keywords:
   - "agent-security"
   - "ai-safety"
   - "sandboxing"
+  - "mitre-atlas"
+  - "owasp-llm-top-10"

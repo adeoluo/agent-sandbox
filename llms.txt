@@ -6,10 +6,11 @@ Languages: Rust. License: MIT. Source: https://github.com/adeoluo/agent-sandbox
 
 ## Docs
 
-- [README](https://github.com/adeoluo/agent-sandbox/blob/main/README.md): motivation, architecture, results, quickstart, usage, design decisions, testing, limitations, roadmap
+- [README](https://github.com/adeoluo/agent-sandbox/blob/main/README.md): motivation, architecture, results, quickstart, usage, design decisions, testing, responsible ai, limitations, roadmap
 - [AGENTS.md](https://github.com/adeoluo/agent-sandbox/blob/main/AGENTS.md): layout, commands and conventions for changing the code
 - [Architecture diagram](https://github.com/adeoluo/agent-sandbox/blob/main/docs/architecture/architecture.mmd): Mermaid source of the component diagram
 - [Architecture](https://github.com/adeoluo/agent-sandbox/blob/main/docs/ARCHITECTURE.md)
+- [Threat Model - Agent Sandbox](https://github.com/adeoluo/agent-sandbox/blob/main/docs/THREAT_MODEL.md)
 - [ADR 0001: Two enforcement layers, a decision engine and an OS backend](https://github.com/adeoluo/agent-sandbox/blob/main/docs/adr/0001-two-layer-enforcement.md)
 - [ADR 0002: Resolve paths component by component, following symlinks before `..`](https://github.com/adeoluo/agent-sandbox/blob/main/docs/adr/0002-path-resolution.md)
 - [ADR 0003: JSON Lines audit log with a SHA-256 hash chain](https://github.com/adeoluo/agent-sandbox/blob/main/docs/adr/0003-audit-hash-chain.md)
