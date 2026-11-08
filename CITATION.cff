@@ -6,8 +6,8 @@ abstract: "A policy-based sandbox for running AI agent tool calls with declarati
 authors:
   - family-names: "Ogunnoiki"
     given-names: "Adeolu"
-version: "0.1.1"
-date-released: "2026-11-02"
+version: "0.1.2"
+date-released: "2026-11-08"
 license: MIT
 repository-code: "https://github.com/adeoluo/agent-sandbox"
 url: "https://github.com/adeoluo/agent-sandbox"
