@@ -40,9 +40,10 @@ inspect: ## Show what this OS enforces for the sample policy
 demo: release ## Python client over the stdio protocol
 	python3 examples/python_client.py target/release/agent-sandbox policies/coding-agent.toml
 
-diagram: ## Render the architecture diagram to SVG (needs mmdc)
-	npx -y @mermaid-js/mermaid-cli -i docs/architecture/architecture.mmd -o docs/architecture/architecture.svg \
-	     -c mermaid.config.json -b transparent
+diagram: ## Render every diagram in docs/architecture to SVG (house theme, white background)
+	@for f in docs/architecture/*.mmd; do \
+		npx -y @mermaid-js/mermaid-cli -q -i "$$f" -o "$${f%.mmd}.svg" -c mermaid.config.json -b white || exit 1; \
+	done
 
 clean: ## Remove build output and scratch directories
 	cargo clean
