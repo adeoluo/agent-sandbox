@@ -141,10 +141,10 @@ current machine, and every execution records it in the audit log.
 | Wall-clock timeout | process group SIGKILL | process group SIGKILL | same |
 | CPU time | `RLIMIT_CPU` | `RLIMIT_CPU` | same |
 | Memory | RSS watchdog over the process group, sampled every 5 ms (macOS rejects `RLIMIT_AS` with `EINVAL`) | `RLIMIT_AS` per process | same as the OS column |
-| Process count | `RLIMIT_NPROC` (per user, set to current count plus `max_processes`) | `RLIMIT_NPROC` (counts threads) | same |
+| Process count | `RLIMIT_NPROC` (per user, set to current count plus `max_processes`) | `cgroup v2 pids.max` when writable + `RLIMIT_NPROC` (or 5 ms `/proc` group watchdog when `uid 0` lacks writable cgroups) | same |
 | File size, open files | `RLIMIT_FSIZE`, `RLIMIT_NOFILE` | `RLIMIT_FSIZE`, `RLIMIT_NOFILE` | same |
 | Output size | capped per stream; producer killed by default | same | same |
-| Leftover background processes | process group swept with SIGKILL after exit | same | same |
+| Leftover background processes | process group swept with SIGKILL after exit | `cgroup.kill` (when cgroup v2 active) + process group swept with SIGKILL | process group swept with SIGKILL |
 
 Verified in CI: `ubuntu-latest` (Ubuntu 26.04) reports `landlock-abi-8` and `macos-latest`
 reports `sandbox-exec`. The adversarial tests that need a backend ran on both; none were
@@ -154,7 +154,7 @@ skipped.
 
 ### Install
 
-From source (Rust 1.99 or newer):
+From source (Rust 1.85 or newer):
 
 ```bash
 git clone https://github.com/adeoluo/agent-sandbox && cd agent-sandbox
@@ -468,13 +468,19 @@ Stated plainly, because a sandbox that overclaims is worse than none:
   watchdog samples RSS every 5 ms and can be outrun by a very fast allocation.
 - **`RLIMIT_NPROC` is per user**, not per sandbox. The limit is set to the user's current
   process count plus `max_processes`, so concurrent activity by the same user shifts the
-  headroom. It does not apply to root.
+  headroom. On Linux, when a writable delegated cgroup v2 hierarchy with the `pids` controller
+  is available, `agent-sandbox` also creates a per-run leaf with `pids.max` and tears it down
+  via `cgroup.kill`; when running as `uid 0` without writable cgroup v2 (where the kernel
+  ignores `RLIMIT_NPROC`), a 5 ms `/proc` process-group watchdog enforces the cap instead.
 - **Fork-bomb cleanup on macOS**: the group is SIGKILLed repeatedly for up to 5 seconds.
   On a loaded macOS runner, a few killed members have been observed to stay in the kernel
   exit path for several seconds after `run` returns. They no longer fork, and the test
   bounds their number; on Linux the group is empty when `run` returns.
-- **Process-group escape**: a child that calls `setsid` leaves the process group and is not
-  killed by the timeout or the cleanup sweep. Landlock and Seatbelt still apply to it.
+- **Process-group escape**: without an active cgroup v2 leaf (for example on macOS or in
+  unprivileged Linux containers without delegated cgroups), a child that calls `setsid` leaves
+  the process group and is not killed by the timeout or the cleanup sweep (though Landlock and
+  Seatbelt still apply to it). When cgroup v2 `pids` is active, `cgroup.kill` terminates escaped
+  sessions too.
 - **TOCTOU**: a path checked by the engine can change before the child opens it. The file
   API opens the final component with `O_NOFOLLOW`; the OS backends re-check writes in the
   kernel. Hard links to files outside the roots are not detected by path checks.
@@ -492,8 +498,8 @@ Stated plainly, because a sandbox that overclaims is worse than none:
 - seccomp filter for socket families Landlock does not cover (UDP, raw).
 - Per-tool argument schemas (`tar`, `git`, `find`) instead of glob lists.
 - Signed audit heads and a streaming verifier.
-- Linux release binaries built in CI, and a Homebrew formula.
-- cgroup v2 memory and PID limits on Linux when delegated cgroups are available.
+- Linux release binaries built in CI.
+- cgroup v2 `memory.max` enforcement alongside the existing `pids.max` leaf when delegated cgroups are available.
 
 ### Contributing and security
 
