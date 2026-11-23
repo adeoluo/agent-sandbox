@@ -13,6 +13,8 @@
 
 ---
 
+> **Evidence level: unit tested.** The suite includes adversarial commands and runs as root in three container scenarios in CI. There has been no external security audit. Not independently reproduced and not used in production. [What the levels mean](https://github.com/adeoluo#evidence-levels).
+
 ## Motivation
 
 `agent-sandbox` sits between an agent and the operating system. The agent asks to run
