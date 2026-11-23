@@ -15,6 +15,22 @@
 
 > **Evidence level: unit tested.** The suite includes adversarial commands and runs as root in three container scenarios in CI. There has been no external security audit. Not independently reproduced and not used in production. [What the levels mean](https://github.com/adeoluo#evidence-levels).
 
+## In plain English
+
+AI agents run commands on your computer. This sandbox decides which commands are allowed and
+locks down the ones that run, so a tricked agent cannot read your keys or flood your machine.
+
+- **All 38 hostile test commands were blocked.**
+- **It decides in 8 millionths of a second,** and adds about a thousandth of a second to
+  starting a command (about 8 thousandths on macOS with the system sandbox switched on).
+- **It stops runaway process floods ("fork bombs") even when running as root on Linux,** a
+  case where the usual limit is ignored by the system.
+- **It fails safe.** If it cannot enforce a limit, it refuses to run the command instead of
+  pretending.
+
+**Where it falls short:** the root process limit needs Linux 5.5 or newer and has not been
+tested under gVisor. No outside security team has audited it.
+
 ## Motivation
 
 `agent-sandbox` sits between an agent and the operating system. The agent asks to run
