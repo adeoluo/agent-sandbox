@@ -134,12 +134,22 @@ fn memory_limit_contains_a_large_allocation() {
 fn fork_bomb_is_bounded() {
     let fx = fixture(&with_limits("timeout_ms = 3000\nmax_processes = 16"));
     let start = Instant::now();
-    let out = fx.run(&[
-        "sh",
-        "-c",
-        "bomb() { bomb | bomb & }; bomb; sleep 1; echo survived",
-    ]);
+    let root_without_cgroup =
+        unsafe { libc::geteuid() } == 0 && !agent_sandbox::limits::cgroup_v2_pids_available();
+    // When running as uid 0 in a container without writable cgroup v2 `pids.max`, Linux ignores
+    // RLIMIT_NPROC for root, so containment relies on the parent's user-space /proc watchdog.
+    // Spawn a bounded burst (64 children) rather than an exponential bomb so running `cargo test`
+    // as root inside a restricted container never starves the container host's PID table.
+    let script = if root_without_cgroup {
+        "i=0; while [ $i -lt 64 ]; do sleep 2 & i=$((i+1)); done; wait; echo survived"
+    } else {
+        "bomb() { bomb | bomb & }; bomb; sleep 1; echo survived"
+    };
+    let out = fx.run(&["sh", "-c", script]);
     assert!(out.executed);
+    if root_without_cgroup {
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("survived"));
+    }
     assert!(start.elapsed() < Duration::from_secs(12));
     // The bomb's process group is emptied once run() returns. On Linux this is exact. On
     // macOS, under load, a few SIGKILLed members can sit in the kernel exit path for
@@ -167,7 +177,13 @@ fn fork_bomb_is_bounded() {
         }
     }
     let enforcement = out.enforcement.unwrap();
-    assert!(enforcement.processes.contains("RLIMIT_NPROC"));
+    assert!(
+        enforcement.processes.contains("RLIMIT_NPROC")
+            || enforcement.processes.contains("cgroup v2")
+            || enforcement.processes.contains("watchdog"),
+        "unexpected processes enforcement string: {}",
+        enforcement.processes
+    );
 }
 
 fn group_members(pgid: libc::pid_t) -> Vec<String> {

@@ -185,6 +185,27 @@ fn interpreter_cannot_open_tcp_connections() {
 
 #[test]
 fn fork_bomb_through_allowed_shell_is_contained() {
+    if unsafe { libc::geteuid() } == 0 && !agent_sandbox::limits::cgroup_v2_pids_available() {
+        // Without kernel RLIMIT_NPROC (ignored for uid 0) or writable cgroup v2 pids.max,
+        // avoid an exponential unbounded fork bomb that could starve a container host;
+        // verify the 1 ms process-group watchdog contains a bounded rapid spawner instead.
+        let fx = fixture(
+            &format!("{SHELL}max_processes = 8\n")
+                .replace("timeout_ms = 10000", "timeout_ms = 3000"),
+        );
+        let out = fx.run(&[
+            "sh",
+            "-c",
+            "i=0; while [ $i -lt 48 ]; do sleep 2 & i=$((i+1)); done; wait",
+        ]);
+        assert!(out.executed);
+        assert_ne!(
+            out.exit_code,
+            Some(0),
+            "root watchdog should kill spawner: {out:?}"
+        );
+        return;
+    }
     let fx = fixture(
         &format!("{SHELL}max_processes = 16\n").replace("timeout_ms = 10000", "timeout_ms = 2000"),
     );

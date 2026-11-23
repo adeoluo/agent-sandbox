@@ -339,7 +339,9 @@ impl Sandbox {
         let need_proc_watchdog = plan.process_watchdog_max.is_some()
             && !pids_cgroup.active()
             && unsafe { libc::getuid() } == 0;
-        let poll = if plan.rss_watchdog_bytes.is_some() || need_proc_watchdog {
+        let poll = if need_proc_watchdog {
+            Duration::from_millis(1)
+        } else if plan.rss_watchdog_bytes.is_some() {
             Duration::from_millis(5)
         } else {
             Duration::from_secs(3600)
