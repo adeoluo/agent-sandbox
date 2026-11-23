@@ -244,6 +244,7 @@ fn root_process_cap_is_never_exceeded() {
     }
     let fx = fixture(&with_limits("timeout_ms = 8000\nmax_processes = 8"));
     let marker = fx.scratch().join("pgid");
+    let release = fx.scratch().join("release");
     let done = Arc::new(AtomicBool::new(false));
     let peak = Arc::new(AtomicU64::new(0));
     let (done2, peak2, marker2) = (done.clone(), peak.clone(), marker.clone());
@@ -255,16 +256,24 @@ fn root_process_cap_is_never_exceeded() {
             {
                 let n = agent_sandbox::limits::group_process_count(pgid);
                 peak2.fetch_max(n, Ordering::SeqCst);
+                if n >= 2 {
+                    let _ = std::fs::write(&release, b"seen");
+                }
             }
             std::thread::yield_now();
         }
     });
-    // The sandbox makes the command a process-group leader, so `$$` is the group id.
+    // The sandbox makes the command a process-group leader, so `$$` is the group id. The
+    // spawner runs in a subshell because `sh` exits on a refused fork, and the sandbox kills
+    // the group as soon as the leader exits. The leader then spins on builtins (no forks)
+    // until the sampler has counted the group, so the observation does not depend on the
+    // sampler thread being scheduled inside the few milliseconds the spawner needs.
     let out = fx.run(&[
         "sh",
         "-c",
-        "echo $$ > scratch/pgid; i=0; \
-         while [ $i -lt 48 ]; do sleep 1 & i=$((i+1)); done 2>/dev/null; wait",
+        "echo $$ > scratch/pgid; \
+         ( i=0; while [ $i -lt 48 ]; do sleep 5 & i=$((i+1)); done ) 2>/dev/null; \
+         while [ ! -e scratch/release ]; do :; done",
     ]);
     done.store(true, Ordering::SeqCst);
     sampler.join().unwrap();
