@@ -315,7 +315,9 @@ impl Sandbox {
             source,
         })?;
         drop(prepared);
-        let pgid = child.id() as libc::pid_t;
+        let child_pid = child.id();
+        let pgid = child_pid as libc::pid_t;
+        let pids_cgroup = limits::PidsCgroup::attach(child_pid, plan.process_watchdog_max);
         let overflow = Arc::new(AtomicBool::new(false));
         if let (Some(data), Some(mut pipe)) =
             (stdin.map(|s| s.as_bytes().to_vec()), child.stdin.take())
@@ -334,7 +336,10 @@ impl Sandbox {
         });
 
         let deadline = start + Duration::from_millis(lim.timeout_ms);
-        let poll = if plan.rss_watchdog_bytes.is_some() {
+        let need_proc_watchdog = plan.process_watchdog_max.is_some()
+            && !pids_cgroup.active()
+            && unsafe { libc::getuid() } == 0;
+        let poll = if plan.rss_watchdog_bytes.is_some() || need_proc_watchdog {
             Duration::from_millis(5)
         } else {
             Duration::from_secs(3600)
@@ -362,12 +367,22 @@ impl Sandbox {
                             .recv()
                             .map_err(|_| SandboxError::Audit("wait thread vanished".into()))?;
                     }
+                    if need_proc_watchdog
+                        && let Some(max_procs) = plan.process_watchdog_max
+                        && limits::group_process_count(pgid) > max_procs
+                    {
+                        kill_group(pgid);
+                        break rx
+                            .recv()
+                            .map_err(|_| SandboxError::Audit("wait thread vanished".into()))?;
+                    }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(SandboxError::Audit("wait thread vanished".into()));
                 }
             }
         }?;
+        drop(pids_cgroup);
         sweep_group(pgid);
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
         let (stdout, stdout_bytes) = collect(&out_rx.0, &out_rx.1, DRAIN_GRACE);

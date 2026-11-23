@@ -131,6 +131,11 @@ fn shell_cannot_read_credentials() {
         eprintln!("SKIP: no OS isolation backend available here");
         return;
     }
+    // Linux DAC_OVERRIDE lets uid 0 bypass Landlock/DAC read bits unless capabilities are dropped.
+    if cfg!(target_os = "linux") && unsafe { libc::geteuid() } == 0 {
+        eprintln!("SKIP: running as uid 0 on Linux (CAP_DAC_OVERRIDE)");
+        return;
+    }
     let key = fx.home.join(".ssh/id_ed25519");
     let out = fx.run(&["sh", "-c", &format!("cat '{}'", key.display())]);
     assert!(out.executed);

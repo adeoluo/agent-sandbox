@@ -29,6 +29,9 @@ pub struct RlimitPlan {
     pub notes: Vec<String>,
     /// Resident-set ceiling enforced by the parent's watchdog (macOS only).
     pub rss_watchdog_bytes: Option<u64>,
+    /// Process-group task ceiling enforced by cgroup v2 `pids.max` (Linux when writable)
+    /// and a 5 ms parent watchdog fallback (when running as root without writable cgroups).
+    pub process_watchdog_max: Option<u64>,
 }
 
 fn current_hard(resource: Resource) -> libc::rlim_t {
@@ -117,12 +120,27 @@ pub fn plan(limits: &Limits) -> RlimitPlan {
             total,
             total,
         ));
-        plan.processes =
-            format!("RLIMIT_NPROC {total} ({existing} already owned by uid {uid} plus {extra})");
+        plan.process_watchdog_max = Some(extra);
         if uid == 0 {
-            plan.notes.push(
-                "running as root: the kernel does not apply RLIMIT_NPROC to privileged users"
-                    .into(),
+            if cgroup_v2_pids_available() {
+                plan.processes = format!(
+                    "cgroup v2 pids.max {extra} + process-group watchdog (RLIMIT_NPROC {total} set; uid 0)"
+                );
+            } else {
+                plan.processes = format!(
+                    "process-group watchdog {extra} tasks (RLIMIT_NPROC {total} ignored by kernel for uid 0; cgroup v2 unavailable)"
+                );
+                plan.notes.push(
+                    "running as root without writable cgroup v2: process cap enforced by parent watchdog rather than kernel pids.max".into(),
+                );
+            }
+        } else if cgroup_v2_pids_available() {
+            plan.processes = format!(
+                "cgroup v2 pids.max {extra} + RLIMIT_NPROC {total} ({existing} owned by uid {uid} plus {extra})"
+            );
+        } else {
+            plan.processes = format!(
+                "RLIMIT_NPROC {total} ({existing} already owned by uid {uid} plus {extra})"
             );
         }
     }
@@ -229,6 +247,156 @@ pub fn group_rss_bytes(pgid: libc::pid_t) -> u64 {
 #[cfg(not(target_os = "macos"))]
 pub fn group_rss_bytes(_pgid: libc::pid_t) -> u64 {
     0
+}
+
+/// Number of live tasks belonging to process group `pgid` (used by the parent watchdog
+/// when running as root without writable cgroup v2 `pids.max`).
+#[cfg(target_os = "linux")]
+pub fn group_process_count(pgid: libc::pid_t) -> u64 {
+    let mut count = 0u64;
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        if let Some(rparen) = stat.rfind(')') {
+            let mut fields = stat[rparen + 1..].split_whitespace();
+            let _state = fields.next();
+            let _ppid = fields.next();
+            if let Some(pgrp_str) = fields.next()
+                && pgrp_str.parse::<libc::pid_t>().ok() == Some(pgid)
+            {
+                let tasks = std::fs::read_dir(entry.path().join("task"))
+                    .map(|d| d.count() as u64)
+                    .unwrap_or(1);
+                count += tasks.max(1);
+            }
+        }
+    }
+    count
+}
+
+#[cfg(target_os = "macos")]
+pub fn group_process_count(pgid: libc::pid_t) -> u64 {
+    const PROC_PGRP_ONLY: u32 = 2;
+    macos_list_pids(PROC_PGRP_ONLY, pgid as u32)
+        .map(|v| v.len() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn group_process_count(_pgid: libc::pid_t) -> u64 {
+    0
+}
+
+/// Whether Linux cgroup v2 `pids` controller is writable by this process.
+#[cfg(target_os = "linux")]
+pub fn cgroup_v2_pids_available() -> bool {
+    let Some(base) = current_cgroup_v2_dir() else {
+        return false;
+    };
+    let Ok(controllers) = std::fs::read_to_string(base.join("cgroup.controllers")) else {
+        return false;
+    };
+    if !controllers.split_whitespace().any(|c| c == "pids") {
+        return false;
+    }
+    // Check writability without leaving artifacts behind.
+    let probe = base.join(format!("agent-sandbox-probe-{}", std::process::id()));
+    if std::fs::create_dir(&probe).is_ok() {
+        let _ = std::fs::remove_dir(&probe);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn cgroup_v2_pids_available() -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn current_cgroup_v2_dir() -> Option<std::path::PathBuf> {
+    let content = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    for line in content.lines() {
+        if let Some(rel) = line.strip_prefix("0::") {
+            let trimmed = rel.trim().trim_start_matches('/');
+            let root = std::path::Path::new("/sys/fs/cgroup");
+            let dir = if trimmed.is_empty() {
+                root.to_path_buf()
+            } else {
+                root.join(trimmed)
+            };
+            if dir.is_dir() {
+                return Some(dir);
+            }
+        }
+    }
+    None
+}
+
+/// RAII handle for a transient per-invocation cgroup v2 leaf enforcing `pids.max`.
+pub struct PidsCgroup {
+    #[cfg(target_os = "linux")]
+    dir: Option<std::path::PathBuf>,
+}
+
+impl PidsCgroup {
+    #[cfg(target_os = "linux")]
+    pub fn attach(pid: u32, max_pids: Option<u64>) -> Self {
+        let Some(max) = max_pids else {
+            return Self { dir: None };
+        };
+        let Some(parent) = current_cgroup_v2_dir() else {
+            return Self { dir: None };
+        };
+        // Best-effort enable +pids on parent subtree_control when running in a root cgroup.
+        let _ = std::fs::write(parent.join("cgroup.subtree_control"), "+pids");
+        let leaf = parent.join(format!("agent-sandbox-{}-{pid}", std::process::id()));
+        if std::fs::create_dir(&leaf).is_err() {
+            return Self { dir: None };
+        }
+        if std::fs::write(leaf.join("pids.max"), max.to_string()).is_err()
+            || std::fs::write(leaf.join("cgroup.procs"), pid.to_string()).is_err()
+        {
+            let _ = std::fs::remove_dir(&leaf);
+            return Self { dir: None };
+        }
+        Self { dir: Some(leaf) }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn attach(_pid: u32, _max_pids: Option<u64>) -> Self {
+        Self {}
+    }
+
+    pub fn active(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.dir.is_some()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+}
+
+impl Drop for PidsCgroup {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(dir) = self.dir.take() {
+            let _ = std::fs::write(dir.join("cgroup.kill"), "1");
+            let _ = std::fs::remove_dir(&dir);
+        }
+    }
 }
 
 #[cfg(test)]
