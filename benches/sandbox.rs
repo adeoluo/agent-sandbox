@@ -78,6 +78,12 @@ fn spawns(c: &mut Criterion) {
     for mode in ["off", "auto"] {
         let sb = sandbox(mode);
         let argv = vec!["echo".to_string()];
+        // As root with no kernel mechanism for the policy's process limit the sandbox
+        // refuses to run commands, so there is nothing to time.
+        if let Err(err) = sb.run(&argv, &RunOptions::default()) {
+            eprintln!("skipping sandbox isolation={mode}: {err}");
+            continue;
+        }
         group.bench_function(format!("sandbox isolation={mode}"), |b| {
             b.iter(|| sb.run(&argv, &RunOptions::default()).unwrap())
         });

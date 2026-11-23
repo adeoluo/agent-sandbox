@@ -23,6 +23,7 @@ compile_error!("agent-sandbox supports Unix platforms (Linux and macOS) only");
 pub mod audit;
 pub mod engine;
 pub mod error;
+pub mod forkgate;
 pub mod isolation;
 pub mod limits;
 pub mod paths;

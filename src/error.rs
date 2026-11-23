@@ -22,6 +22,8 @@ pub enum SandboxError {
     },
     #[error("OS isolation is required by the policy but unavailable: {0}")]
     IsolationUnavailable(String),
+    #[error("the policy sets limits.max_processes but it cannot be enforced: {0}")]
+    LimitUnenforceable(String),
     #[error("audit log error: {0}")]
     Audit(String),
     #[error(transparent)]

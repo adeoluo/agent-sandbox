@@ -71,8 +71,9 @@ Headline numbers (details below):
   `sandbox-exec` on macOS; no measurable extra cost for Landlock on Linux.
 - All 38 adversarial agent commands denied; with an interpreter allowed, writes outside
   scratch, reads of `~/.ssh`, and TCP connects are blocked by the kernel on both CI platforms.
-- 92 tests pass on `ubuntu-latest` and `macos-latest`; line coverage 95.2 percent on macOS and
-  93.2 percent on Linux.
+- 101 tests pass on `ubuntu-latest` and 95 on `macos-latest` (the six fork-gate and root
+  process-cap tests are Linux-only), and the suite also runs as `uid 0` in three containers
+  that each leave one way to enforce the process limit. CI gates line coverage at 85 percent.
 
 ### Benchmarks
 
@@ -141,7 +142,7 @@ current machine, and every execution records it in the audit log.
 | Wall-clock timeout | process group SIGKILL | process group SIGKILL | same |
 | CPU time | `RLIMIT_CPU` | `RLIMIT_CPU` | same |
 | Memory | RSS watchdog over the process group, sampled every 5 ms (macOS rejects `RLIMIT_AS` with `EINVAL`) | `RLIMIT_AS` per process | same as the OS column |
-| Process count | `RLIMIT_NPROC` (per user, set to current count plus `max_processes`) | `cgroup v2 pids.max` when writable + `RLIMIT_NPROC` (or 5 ms `/proc` group watchdog when `uid 0` lacks writable cgroups) | same |
+| Process count | `RLIMIT_NPROC` (per user, set to current count plus `max_processes`); as `uid 0`, which the kernel exempts, commands are refused | `RLIMIT_NPROC`, plus a `cgroup v2 pids.max` leaf when one can be created. As `uid 0`: the `pids.max` leaf, else a seccomp fork gate, else commands are refused (see [Process limit for root](#process-limit-for-root)) | same |
 | File size, open files | `RLIMIT_FSIZE`, `RLIMIT_NOFILE` | `RLIMIT_FSIZE`, `RLIMIT_NOFILE` | same |
 | Output size | capped per stream; producer killed by default | same | same |
 | Leftover background processes | process group swept with SIGKILL after exit | `cgroup.kill` (when cgroup v2 active) + process group swept with SIGKILL | process group swept with SIGKILL |
@@ -234,7 +235,7 @@ cpu_seconds = 10                 # RLIMIT_CPU
 memory_bytes = 1073741824        # RLIMIT_AS on Linux, RSS watchdog on macOS
 max_output_bytes = 1048576       # per stream
 kill_on_output_limit = true
-max_processes = 64               # RLIMIT_NPROC headroom above the caller's current count
+max_processes = 64               # RLIMIT_NPROC headroom above the caller's count; see "Process limit for root"
 max_file_size_bytes = 104857600  # RLIMIT_FSIZE, and the cap for write_file
 max_open_files = 256             # RLIMIT_NOFILE
 
@@ -385,6 +386,8 @@ File-operation checks and a dry run with the full decision as JSON.
   canonical JSON; anchored heads for truncation detection.
 - [ADR 0004](docs/adr/0004-os-backends.md): Seatbelt on macOS, Landlock on Linux, and why
   namespaces are not the core in v0.1.
+- [ADR 0005](docs/adr/0005-process-limit-for-root.md): for root, a process limit is
+  enforced by a `pids.max` cgroup or a seccomp fork gate, or the command is refused.
 
 Other choices: the sandbox never invokes a shell (argv goes straight to `execve`, so `;`,
 `|`, and `$()` in arguments are inert text); the binary an agent names is pinned to the one
@@ -399,17 +402,20 @@ make coverage    # cargo llvm-cov with an 85 percent line gate
 make lint        # cargo fmt --check and cargo clippy --all-targets -D warnings
 ```
 
-92 tests (16 unit, 75 integration, 1 doc test), three of them property tests with 256
-cases each. All pass on `ubuntu-latest` and `macos-latest` in CI.
+101 tests on Linux (19 unit, 81 integration, 1 doc test) and 95 on macOS (17 unit, 77
+integration, 1 doc test), three of them property tests with 256 cases each. All pass on
+`ubuntu-latest` and `macos-latest` in CI, and the Linux suite runs again as `uid 0` inside
+three containers (read-only cgroups, a delegated `pids` cgroup, and neither mechanism).
 
 | Suite | Tests | What it covers |
 |---|---:|---|
 | `tests/policy_engine.rs` | 14 | a 35-row allow/deny matrix with the expected rule for each row; binary pinning (a copy of `ls` in scratch is not `ls`); parsing and validation errors; JSON and TOML loading |
 | `tests/path_escape.rs` | 15 | `..` chains, absolute paths, symlinked files and directories, dangling links, link loops, symlink then `..`, tilde expansion, eight Unicode tricks (division slash, fullwidth solidus, one-dot leaders, fullwidth stops, RTL override, zero-width space, NUL, newline); property tests: the resolver equals `realpath(3)`, no allowed write leaves scratch, the engine is total on arbitrary argv |
-| `tests/resource_limits.rs` | 12 | timeout kills `sleep 30` and its process group; background children reaped; `yes` stopped at the output cap; CPU limit stops a busy loop; a 1 GiB allocation is contained under a 128 MiB limit; a fork bomb is bounded and its group emptied; `RLIMIT_FSIZE`; stdin; environment scrubbing |
+| `tests/resource_limits.rs` | 14 | timeout kills `sleep 30` and its process group; background children reaped; `yes` stopped at the output cap; CPU limit stops a busy loop; a 1 GiB allocation is contained under a 128 MiB limit; a fork bomb is bounded and its group emptied; as root, a spawner asking for 48 tasks under a limit of 8 is sampled from outside and never holds more than 8; the suite asserts which mechanism enforced the limit; `RLIMIT_FSIZE`; stdin; environment scrubbing |
+| `tests/forkgate.rs` | 3 | the seccomp fork gate driven directly, as any user: the group is held at the limit and the refused forks are counted; a command under the limit runs unchanged; `setpgid` is refused inside the gate |
 | `tests/audit_chain.rs` | 12 | intact chains verify; floating-point event values re-hash identically after a parse; modified, recomputed, deleted, reordered, inserted, and malformed records are detected at the right line; truncation is detected with `--expect-head`; four concurrent writers keep one chain |
 | `tests/adversarial.rs` | 7 | 38 known agent-misbehavior commands all denied (listed below); with `sh` and `perl` allowed, the OS backend blocks writes outside scratch, reads of `~/.ssh`, and a TCP connect to a local listener (with a control run that connects when the network is allowed) |
-| `tests/interfaces.rs` | 11 | CLI exit codes and messages, `--json`, `--dry-run`, `audit verify` on a tampered log, `inspect`, `serve` driven from another process, every stdio `op`, malformed input |
+| `tests/interfaces.rs` | 12 | CLI exit codes and messages, `--json`, `--dry-run`, `audit verify` on a tampered log, `inspect`, `serve` driven from another process, every stdio `op`, malformed input |
 | `tests/isolation.rs` | 4 | backend selection for `off`, `auto`, `required`; generated Seatbelt profile content |
 
 The adversarial list includes `rm -rf /`, `rm -rf ~`, `rm -rf scratch/../src`,
@@ -440,6 +446,48 @@ because each OS only executes its own backend branch.
 - **Scope:** the sandbox limits what a manipulated agent can do; it does not detect prompt
   injection and does not replace human review of consequential actions.
 
+## Process limit for root
+
+`max_processes` is a hard ceiling only if the kernel enforces it before a new task exists.
+For ordinary users that is `RLIMIT_NPROC`. The kernel exempts `uid 0`, which is how agents
+usually run inside containers, so for root the sandbox picks the first mechanism that works
+and records it in `enforcement.processes` in the audit log:
+
+| Order | Mechanism | When it applies | How it is enforced |
+|---|---|---|---|
+| 1 | cgroup v2 `pids.max` | a leaf cgroup of type `domain` with `pids.max` can be created under the caller's cgroup or beside it | the leaf is created before the command is spawned and the forked child joins it before `exec`, so no task of the command ever runs outside it; `cgroup.kill` empties it afterwards |
+| 2 | seccomp fork gate ([`src/forkgate.rs`](src/forkgate.rs)) | Linux 5.5 or newer on x86-64 or arm64, and the runtime allows a seccomp user-notification listener (Docker's default profile does) | every `clone`, `clone3`, `fork` and `vfork` by the command or a descendant blocks in the kernel while a supervisor thread counts the live tasks of the process group, then continues or fails with `EAGAIN`; `setsid` and `setpgid` return `EPERM` so tasks cannot leave the counted group; other architectures' system calls are refused |
+| 3 | none | neither of the above (and always on macOS as root) | the command is not started: `run` returns `LimitUnenforceable` and the refusal is audited |
+
+There is no polling fallback. An earlier version watched `/proc` from the parent and killed
+the group after it grew past the limit; that reacts after the fact, depends on how fast the
+host answers `/proc`, and an external reviewer saw a 48-process spawner finish under a limit
+of 8 with it. It was removed rather than tuned.
+
+CI runs the whole suite as `uid 0` in three containers, one per row, and each run asserts
+that the expected mechanism was the one used (`AGENT_SANDBOX_EXPECT_PROCESS_CAP`):
+
+```bash
+# 2: read-only cgroups (the default for containers), fork gate
+docker run --rm -v "$PWD":/src -w /src rust:1-slim sh -c \
+  'apt-get update -qq && apt-get install -y -qq procps perl git && cargo test --all-targets'
+# 1: delegated pids cgroup
+docker run --rm --privileged --cgroupns=private -v "$PWD":/src -w /src rust:1-slim sh -c \
+  'apt-get update -qq && apt-get install -y -qq procps perl git &&
+   mkdir /sys/fs/cgroup/runner && echo $$ > /sys/fs/cgroup/runner/cgroup.procs &&
+   echo +pids > /sys/fs/cgroup/cgroup.subtree_control && cargo test --all-targets'
+# 3: no listener and no cgroup, commands refused
+docker run --rm --security-opt seccomp=ci/seccomp-no-listener.json -v "$PWD":/src -w /src \
+  rust:1-slim sh -c \
+  'apt-get update -qq && apt-get install -y -qq procps perl git && cargo test --all-targets'
+```
+
+In the first two, `root_process_cap_is_never_exceeded` starts a shell that tries to hold 48
+background children under a limit of 8 and samples the process group from another thread
+while it runs; the peak was 8 with either mechanism on Linux 7.0 (arm64, Docker Desktop).
+The gate has not been run under gVisor or on kernels older than 5.5; both are expected to
+take row 3.
+
 ## Limitations
 
 Stated plainly, because a sandbox that overclaims is worse than none:
@@ -468,19 +516,23 @@ Stated plainly, because a sandbox that overclaims is worse than none:
   watchdog samples RSS every 5 ms and can be outrun by a very fast allocation.
 - **`RLIMIT_NPROC` is per user**, not per sandbox. The limit is set to the user's current
   process count plus `max_processes`, so concurrent activity by the same user shifts the
-  headroom. On Linux, when a writable delegated cgroup v2 hierarchy with the `pids` controller
-  is available, `agent-sandbox` also creates a per-run leaf with `pids.max` and tears it down
-  via `cgroup.kill`; when running as `uid 0` without writable cgroup v2 (where the kernel
-  ignores `RLIMIT_NPROC`), a 5 ms `/proc` process-group watchdog enforces the cap instead.
+  headroom. Where a `pids.max` leaf can be created the command also joins it before `exec`.
+- **Process limit for root**: the kernel does not apply `RLIMIT_NPROC` to `uid 0`, so for
+  root the limit is enforced another way or not at all; see
+  [Process limit for root](#process-limit-for-root). The fork gate adds one `/proc` scan per
+  task creation (about a millisecond on a small container) and refuses `setsid` and
+  `setpgid`, which breaks commands that daemonize or manage job control. On macOS as root,
+  and on Linux hosts with neither mechanism (kernels before 5.5, or runtimes that do not
+  implement seccomp listeners), a policy that sets `max_processes` cannot run commands.
 - **Fork-bomb cleanup on macOS**: the group is SIGKILLed repeatedly for up to 5 seconds.
   On a loaded macOS runner, a few killed members have been observed to stay in the kernel
   exit path for several seconds after `run` returns. They no longer fork, and the test
   bounds their number; on Linux the group is empty when `run` returns.
-- **Process-group escape**: without an active cgroup v2 leaf (for example on macOS or in
-  unprivileged Linux containers without delegated cgroups), a child that calls `setsid` leaves
-  the process group and is not killed by the timeout or the cleanup sweep (though Landlock and
-  Seatbelt still apply to it). When cgroup v2 `pids` is active, `cgroup.kill` terminates escaped
-  sessions too.
+- **Process-group escape**: a child that calls `setsid` leaves the process group and is not
+  killed by the timeout or the cleanup sweep (though Landlock and Seatbelt still apply to
+  it). This holds on macOS and for non-root users on Linux without a `pids.max` leaf. With a
+  leaf, `cgroup.kill` terminates escaped sessions too; under the fork gate `setsid` is
+  refused, so there is nothing to escape to.
 - **TOCTOU**: a path checked by the engine can change before the child opens it. The file
   API opens the final component with `O_NOFOLLOW`; the OS backends re-check writes in the
   kernel. Hard links to files outside the roots are not detected by path checks.

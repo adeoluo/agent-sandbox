@@ -296,14 +296,75 @@ impl Sandbox {
             Prepared::Landlock(ruleset) => Some(ruleset.raw_fd()),
             _ => None,
         };
+        // Root is exempt from RLIMIT_NPROC, so a process limit must come from the kernel
+        // another way, decided before the command exists: a pids cgroup the child joins
+        // before exec, or the seccomp fork gate. With neither, the command is not started.
+        // SAFETY: getuid has no failure modes.
+        let root = unsafe { libc::getuid() } == 0;
+        let pids_cgroup = plan.process_max.and_then(limits::PidsCgroup::create);
+        #[cfg(target_os = "linux")]
+        let cgroup_fd = pids_cgroup.as_ref().map(limits::PidsCgroup::procs_fd);
+        let gate_wanted = root && plan.process_max.is_some() && pids_cgroup.is_none();
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        let gate = if gate_wanted && crate::forkgate::available() {
+            Some(crate::forkgate::Gate::new()?)
+        } else {
+            None
+        };
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        let (gate_armed, gate_child) = (gate.is_some(), gate.as_ref().map(|g| g.child_side()));
+        #[cfg(not(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )))]
+        let gate_armed = false;
+        if gate_wanted && !gate_armed {
+            return Err(SandboxError::LimitUnenforceable(
+                limits::UNENFORCEABLE_PROCESS_CAP.into(),
+            ));
+        }
+        if let Some(extra) = plan.process_max
+            && root
+        {
+            let cap = if pids_cgroup.is_some() {
+                limits::ProcessCap::Cgroup
+            } else {
+                limits::ProcessCap::ForkGate
+            };
+            enforcement.processes = limits::describe_process_cap(cap, extra, 0, 0, 0, false);
+        }
         // SAFETY: the closure runs between fork and exec and only makes async-signal-safe
-        // syscalls (setrlimit, prctl, landlock_restrict_self) on data prepared in the parent.
+        // syscalls (setrlimit, write, prctl, landlock_restrict_self, seccomp, sendmsg, close)
+        // on data prepared in the parent.
         unsafe {
             cmd.pre_exec(move || {
                 limits::apply(&rlimits)?;
                 #[cfg(target_os = "linux")]
+                if let Some(fd) = cgroup_fd {
+                    // Root has no other cap, so failing to join is fatal; for other users
+                    // RLIMIT_NPROC already applies and the cgroup is an extra layer.
+                    let joined = limits::PidsCgroup::join(fd);
+                    if root {
+                        joined?;
+                    }
+                }
+                #[cfg(target_os = "linux")]
                 if let Some(fd) = landlock_fd {
                     crate::isolation::linux::restrict_self(fd)?;
+                }
+                // Last, so nothing above is subject to the filter.
+                #[cfg(all(
+                    target_os = "linux",
+                    any(target_arch = "x86_64", target_arch = "aarch64")
+                ))]
+                if let Some(side) = &gate_child {
+                    side.arm()?;
                 }
                 Ok(())
             });
@@ -317,7 +378,26 @@ impl Sandbox {
         drop(prepared);
         let child_pid = child.id();
         let pgid = child_pid as libc::pid_t;
-        let pids_cgroup = limits::PidsCgroup::attach(child_pid, plan.process_watchdog_max);
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        let gate_supervisor = match (gate, plan.process_max) {
+            (Some(gate), Some(max)) => match gate.supervise(pgid, max) {
+                Ok(supervisor) => Some(supervisor),
+                Err(source) => {
+                    // Without a supervisor the filter fails every fork, so nothing can
+                    // multiply, but the run is not what the policy asked for: end it.
+                    sweep_group(pgid);
+                    let _ = child.wait();
+                    return Err(SandboxError::Spawn {
+                        program: program.display().to_string(),
+                        source,
+                    });
+                }
+            },
+            _ => None,
+        };
         let overflow = Arc::new(AtomicBool::new(false));
         if let (Some(data), Some(mut pipe)) =
             (stdin.map(|s| s.as_bytes().to_vec()), child.stdin.take())
@@ -336,12 +416,7 @@ impl Sandbox {
         });
 
         let deadline = start + Duration::from_millis(lim.timeout_ms);
-        let need_proc_watchdog = plan.process_watchdog_max.is_some()
-            && !pids_cgroup.active()
-            && unsafe { libc::getuid() } == 0;
-        let poll = if need_proc_watchdog {
-            Duration::from_millis(1)
-        } else if plan.rss_watchdog_bytes.is_some() {
+        let poll = if plan.rss_watchdog_bytes.is_some() {
             Duration::from_millis(5)
         } else {
             Duration::from_secs(3600)
@@ -369,23 +444,26 @@ impl Sandbox {
                             .recv()
                             .map_err(|_| SandboxError::Audit("wait thread vanished".into()))?;
                     }
-                    if need_proc_watchdog
-                        && let Some(max_procs) = plan.process_watchdog_max
-                        && limits::group_process_count(pgid) > max_procs
-                    {
-                        kill_group(pgid);
-                        break rx
-                            .recv()
-                            .map_err(|_| SandboxError::Audit("wait thread vanished".into()))?;
-                    }
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     return Err(SandboxError::Audit("wait thread vanished".into()));
                 }
             }
         }?;
-        drop(pids_cgroup);
         sweep_group(pgid);
+        drop(pids_cgroup);
+        #[cfg(all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ))]
+        if let Some(supervisor) = gate_supervisor {
+            let refused = supervisor.refusals();
+            if refused > 0 {
+                enforcement.notes.push(format!(
+                    "seccomp fork gate refused {refused} task creation(s) with EAGAIN"
+                ));
+            }
+        }
         let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
         let (stdout, stdout_bytes) = collect(&out_rx.0, &out_rx.1, DRAIN_GRACE);
         let (stderr, stderr_bytes) = collect(&err_rx.0, &err_rx.1, DRAIN_GRACE);

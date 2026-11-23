@@ -17,7 +17,8 @@ The decisions behind them are in [`adr/`](adr/).
 | `paths.rs` | Text checks for deceptive characters, `~` and placeholder expansion, and `resolve`, the component-wise symlink-aware resolver ([ADR 0002](adr/0002-path-resolution.md)). |
 | `pattern.rs` | Glob matcher (`*`, `?`, `\`) with linear-time two-pointer matching, used for argument and environment patterns. |
 | `engine.rs` | `Engine::decide(&Request) -> Decision`. Pure apart from `stat`/`readlink`. Holds the ordered checks listed in the README. |
-| `limits.rs` | Plans rlimits in the parent (clamped to current hard limits), applies them in the child, counts the user's processes for `RLIMIT_NPROC` headroom, and samples process-group RSS on macOS. |
+| `limits.rs` | Plans rlimits in the parent (clamped to current hard limits), applies them in the child, counts the user's processes for `RLIMIT_NPROC` headroom, samples process-group RSS on macOS, decides how `max_processes` is enforced (`ProcessCap`), and owns the per-run `pids.max` cgroup leaf the child joins before `exec`. |
+| `forkgate.rs` | Linux only. A seccomp filter that sends every task-creating system call to a supervisor thread over a user-notification listener, so a process limit holds for `uid 0` when no `pids` cgroup is writable. See [ADR 0005](adr/0005-process-limit-for-root.md). |
 | `isolation/mod.rs` | Chooses a backend according to `isolation.mode` and produces the `Enforcement` report. |
 | `isolation/macos.rs` | Generates the Seatbelt profile and probes whether `sandbox-exec` works here. |
 | `isolation/linux.rs` | Builds a Landlock ruleset with raw syscalls in the parent; `restrict_self` runs in the child. |

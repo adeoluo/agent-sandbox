@@ -29,10 +29,32 @@ pub struct RlimitPlan {
     pub notes: Vec<String>,
     /// Resident-set ceiling enforced by the parent's watchdog (macOS only).
     pub rss_watchdog_bytes: Option<u64>,
-    /// Process-group task ceiling enforced by cgroup v2 `pids.max` (Linux when writable)
-    /// and a 5 ms parent watchdog fallback (when running as root without writable cgroups).
-    pub process_watchdog_max: Option<u64>,
+    /// The configured `max_processes`, when set.
+    pub process_max: Option<u64>,
+    /// The mechanism expected to enforce `process_max` on this host.
+    pub process_cap: ProcessCap,
 }
+
+/// How a configured `max_processes` is enforced. Every variant except `Unenforceable` is
+/// decided by the kernel before a new task exists; there is no polling fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProcessCap {
+    /// The policy sets no process limit.
+    #[default]
+    None,
+    /// `RLIMIT_NPROC`, which the kernel enforces for every user except root.
+    Rlimit,
+    /// cgroup v2 `pids.max` on a leaf cgroup the child joins before `exec`.
+    Cgroup,
+    /// The seccomp fork gate (`forkgate`), for root without a writable cgroup.
+    ForkGate,
+    /// Root with neither mechanism. The sandbox refuses to run rather than start a command
+    /// whose process limit nothing enforces.
+    Unenforceable,
+}
+
+/// Why a root caller cannot have `max_processes` enforced, for the refusal error.
+pub const UNENFORCEABLE_PROCESS_CAP: &str = "the kernel ignores RLIMIT_NPROC for uid 0, cgroup v2 pids.max is not writable here, and a seccomp user-notification listener is unavailable; run as a non-root user, make the pids cgroup controller writable, or remove limits.max_processes from the policy";
 
 fn current_hard(resource: Resource) -> libc::rlim_t {
     let mut cur = libc::rlimit {
@@ -120,31 +142,55 @@ pub fn plan(limits: &Limits) -> RlimitPlan {
             total,
             total,
         ));
-        plan.process_watchdog_max = Some(extra);
-        if uid == 0 {
-            if cgroup_v2_pids_available() {
-                plan.processes = format!(
-                    "cgroup v2 pids.max {extra} + process-group watchdog (RLIMIT_NPROC {total} set; uid 0)"
-                );
-            } else {
-                plan.processes = format!(
-                    "process-group watchdog {extra} tasks (RLIMIT_NPROC {total} ignored by kernel for uid 0; cgroup v2 unavailable)"
-                );
-                plan.notes.push(
-                    "running as root without writable cgroup v2: process cap enforced by parent watchdog rather than kernel pids.max".into(),
-                );
-            }
-        } else if cgroup_v2_pids_available() {
-            plan.processes = format!(
-                "cgroup v2 pids.max {extra} + RLIMIT_NPROC {total} ({existing} owned by uid {uid} plus {extra})"
-            );
+        plan.process_max = Some(extra);
+        let cgroup = cgroup_v2_pids_available();
+        plan.process_cap = if uid != 0 {
+            ProcessCap::Rlimit
+        } else if cgroup {
+            ProcessCap::Cgroup
+        } else if crate::forkgate::available() {
+            ProcessCap::ForkGate
         } else {
-            plan.processes = format!(
-                "RLIMIT_NPROC {total} ({existing} already owned by uid {uid} plus {extra})"
-            );
+            ProcessCap::Unenforceable
+        };
+        plan.processes =
+            describe_process_cap(plan.process_cap, extra, total, existing, uid, cgroup);
+        if plan.process_cap == ProcessCap::Unenforceable {
+            plan.notes.push(format!(
+                "max_processes cannot be enforced, so commands are refused: {UNENFORCEABLE_PROCESS_CAP}"
+            ));
         }
     }
     plan
+}
+
+/// The audit-log description of how a process limit of `extra` tasks is enforced.
+pub fn describe_process_cap(
+    cap: ProcessCap,
+    extra: u64,
+    total: u64,
+    existing: u64,
+    uid: libc::uid_t,
+    cgroup_also: bool,
+) -> String {
+    match cap {
+        ProcessCap::None => String::new(),
+        ProcessCap::Rlimit if cgroup_also => format!(
+            "cgroup v2 pids.max {extra} + RLIMIT_NPROC {total} ({existing} owned by uid {uid} plus {extra})"
+        ),
+        ProcessCap::Rlimit => {
+            format!("RLIMIT_NPROC {total} ({existing} already owned by uid {uid} plus {extra})")
+        }
+        ProcessCap::Cgroup => format!(
+            "cgroup v2 pids.max {extra}, joined before exec (the kernel ignores RLIMIT_NPROC for uid 0)"
+        ),
+        ProcessCap::ForkGate => format!(
+            "seccomp fork gate: at most {extra} tasks in the process group, every clone/fork approved by the supervisor (the kernel ignores RLIMIT_NPROC for uid 0; cgroup v2 pids.max not writable); setsid and setpgid are refused"
+        ),
+        ProcessCap::Unenforceable => format!(
+            "max_processes {extra} is not enforceable on this host (RLIMIT_NPROC is ignored for uid 0); commands are refused"
+        ),
+    }
 }
 
 /// Applies the plan. Runs in the forked child, so it only calls `setrlimit`.
@@ -249,8 +295,8 @@ pub fn group_rss_bytes(_pgid: libc::pid_t) -> u64 {
     0
 }
 
-/// Number of live tasks belonging to process group `pgid` (used by the parent watchdog
-/// when running as root without writable cgroup v2 `pids.max`).
+/// Number of live tasks (threads included) in process group `pgid`. The fork gate calls
+/// this while the task that wants to fork is still blocked in the kernel.
 #[cfg(target_os = "linux")]
 pub fn group_process_count(pgid: libc::pid_t) -> u64 {
     let mut count = 0u64;
@@ -295,26 +341,11 @@ pub fn group_process_count(_pgid: libc::pid_t) -> u64 {
     0
 }
 
-/// Whether Linux cgroup v2 `pids` controller is writable by this process.
+/// Whether a leaf cgroup with a working `pids.max` can be created under this process's
+/// cgroup v2 directory. Probed by creating one and removing it again.
 #[cfg(target_os = "linux")]
 pub fn cgroup_v2_pids_available() -> bool {
-    let Some(base) = current_cgroup_v2_dir() else {
-        return false;
-    };
-    let Ok(controllers) = std::fs::read_to_string(base.join("cgroup.controllers")) else {
-        return false;
-    };
-    if !controllers.split_whitespace().any(|c| c == "pids") {
-        return false;
-    }
-    // Check writability without leaving artifacts behind.
-    let probe = base.join(format!("agent-sandbox-probe-{}", std::process::id()));
-    if std::fs::create_dir(&probe).is_ok() {
-        let _ = std::fs::remove_dir(&probe);
-        true
-    } else {
-        false
-    }
+    PidsCgroup::create(1).is_some()
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -342,49 +373,91 @@ fn current_cgroup_v2_dir() -> Option<std::path::PathBuf> {
     None
 }
 
-/// RAII handle for a transient per-invocation cgroup v2 leaf enforcing `pids.max`.
+/// RAII handle for a per-invocation cgroup v2 leaf with `pids.max` set. The leaf exists
+/// before the command is spawned and the forked child joins it before `exec`, so no task of
+/// the command ever runs outside it.
 pub struct PidsCgroup {
     #[cfg(target_os = "linux")]
-    dir: Option<std::path::PathBuf>,
+    dir: std::path::PathBuf,
+    #[cfg(target_os = "linux")]
+    procs: std::fs::File,
 }
 
 impl PidsCgroup {
+    /// Creates the leaf and sets `pids.max`. `None` when the controller is not usable here.
+    ///
+    /// The leaf is tried under this process's own cgroup and then beside it, under the
+    /// parent, and is used only if the kernel reports it as an ordinary `domain` cgroup with
+    /// a `pids.max` file. This never edits `cgroup.subtree_control` of a cgroup that holds
+    /// processes: enabling `pids` there would turn the caller's own cgroup into a threaded
+    /// domain, whose children cannot accept processes at all. The one cgroup allowed to
+    /// hold processes and delegate is the real root, which is the only place it is enabled.
     #[cfg(target_os = "linux")]
-    pub fn attach(pid: u32, max_pids: Option<u64>) -> Self {
-        let Some(max) = max_pids else {
-            return Self { dir: None };
-        };
-        let Some(parent) = current_cgroup_v2_dir() else {
-            return Self { dir: None };
-        };
-        // Best-effort enable +pids on parent subtree_control when running in a root cgroup.
-        let _ = std::fs::write(parent.join("cgroup.subtree_control"), "+pids");
-        let leaf = parent.join(format!("agent-sandbox-{}-{pid}", std::process::id()));
-        if std::fs::create_dir(&leaf).is_err() {
-            return Self { dir: None };
+    pub fn create(max_pids: u64) -> Option<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let own = current_cgroup_v2_dir()?;
+        let mount = std::path::Path::new("/sys/fs/cgroup");
+        let beside = own.parent().filter(|p| p.starts_with(mount));
+        // Only the real root cgroup has no `cgroup.type` file.
+        if !own.join("cgroup.type").exists() {
+            let _ = std::fs::write(own.join("cgroup.subtree_control"), "+pids");
         }
-        if std::fs::write(leaf.join("pids.max"), max.to_string()).is_err()
-            || std::fs::write(leaf.join("cgroup.procs"), pid.to_string()).is_err()
-        {
-            let _ = std::fs::remove_dir(&leaf);
-            return Self { dir: None };
+        let name = format!(
+            "agent-sandbox-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        for base in std::iter::once(own.as_path()).chain(beside) {
+            let leaf = base.join(&name);
+            if std::fs::create_dir(&leaf).is_err() {
+                continue;
+            }
+            let domain = std::fs::read_to_string(leaf.join("cgroup.type"))
+                .is_ok_and(|kind| kind.trim() == "domain");
+            let capped = domain
+                && std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(leaf.join("pids.max"))
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        f.write_all(max_pids.to_string().as_bytes())
+                    })
+                    .is_ok();
+            let procs = std::fs::OpenOptions::new()
+                .write(true)
+                .open(leaf.join("cgroup.procs"));
+            match (capped, procs) {
+                (true, Ok(procs)) => return Some(Self { dir: leaf, procs }),
+                _ => {
+                    let _ = std::fs::remove_dir(&leaf);
+                }
+            }
         }
-        Self { dir: Some(leaf) }
+        None
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub fn attach(_pid: u32, _max_pids: Option<u64>) -> Self {
-        Self {}
+    pub fn create(_max_pids: u64) -> Option<Self> {
+        None
     }
 
-    pub fn active(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            self.dir.is_some()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
+    /// The descriptor the forked child writes to in order to join the leaf.
+    #[cfg(target_os = "linux")]
+    pub fn procs_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        self.procs.as_raw_fd()
+    }
+
+    /// Moves the calling process into the leaf. Runs in the forked child; one `write`.
+    #[cfg(target_os = "linux")]
+    pub fn join(procs_fd: std::os::fd::RawFd) -> io::Result<()> {
+        // SAFETY: writes one byte from a static buffer to a descriptor opened in the parent.
+        let n = unsafe { libc::write(procs_fd, b"0".as_ptr().cast(), 1) };
+        if n == 1 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
         }
     }
 }
@@ -392,9 +465,15 @@ impl PidsCgroup {
 impl Drop for PidsCgroup {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
-        if let Some(dir) = self.dir.take() {
-            let _ = std::fs::write(dir.join("cgroup.kill"), "1");
-            let _ = std::fs::remove_dir(&dir);
+        {
+            let _ = std::fs::write(self.dir.join("cgroup.kill"), "1");
+            // The kernel removes a cgroup only once its last task has been reaped.
+            for _ in 0..200 {
+                if std::fs::remove_dir(&self.dir).is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
     }
 }
@@ -416,6 +495,11 @@ mod tests {
         let plan = plan(&limits);
         assert!(plan.cpu.contains("RLIMIT_CPU"));
         assert!(plan.processes.contains("RLIMIT_NPROC"));
+        assert_eq!(plan.process_max, Some(8));
+        // SAFETY: getuid has no failure modes.
+        let root = unsafe { libc::getuid() } == 0;
+        assert_eq!(plan.process_cap == ProcessCap::Rlimit, !root);
+        assert_ne!(plan.process_cap, ProcessCap::None);
         assert_ne!(plan.memory, "unlimited");
         let names: Vec<_> = plan.rlimits.iter().map(|r| r.name).collect();
         assert!(names.contains(&"RLIMIT_FSIZE"));

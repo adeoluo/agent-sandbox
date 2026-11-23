@@ -51,6 +51,46 @@ jobs:
       - name: Latency percentiles (informational)
         run: cargo run --quiet --release --example latency 1000
 
+  root-container:
+    name: root in a container (${{ matrix.scenario.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          # Root is exempt from RLIMIT_NPROC, so each container leaves exactly one way to
+          # enforce limits.max_processes and the suite must report that it was the one used.
+          - name: read-only cgroups, seccomp fork gate
+            expect: forkgate
+            docker: ""
+            setup: "true"
+          - name: delegated pids cgroup
+            expect: cgroup
+            docker: "--privileged --cgroupns=private"
+            setup: "mkdir /sys/fs/cgroup/runner && echo $$ > /sys/fs/cgroup/runner/cgroup.procs && echo +pids > /sys/fs/cgroup/cgroup.subtree_control"
+          - name: no cgroup and no seccomp listener, commands refused
+            expect: refused
+            docker: "--security-opt seccomp=ci/seccomp-no-listener.json"
+            setup: "true"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test suite as uid 0
+        env:
+          SETUP: ${{ matrix.scenario.setup }}
+        run: |
+          docker run --rm ${{ matrix.scenario.docker }} \
+            -v "$PWD":/src -w /src \
+            -e CARGO_TARGET_DIR=/tmp/target \
+            -e AGENT_SANDBOX_EXPECT_PROCESS_CAP=${{ matrix.scenario.expect }} \
+            -e SETUP \
+            rust:1-slim sh -ec '
+              apt-get update -qq && apt-get install -y -qq procps perl git >/dev/null
+              test "$(id -u)" = 0
+              eval "$SETUP"
+              cargo test --all-targets -- --nocapture
+            '
+
   coverage:
     name: coverage (ubuntu, gate 85%)
     runs-on: ubuntu-latest

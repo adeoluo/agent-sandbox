@@ -130,26 +130,68 @@ fn memory_limit_contains_a_large_allocation() {
     assert_eq!(String::from_utf8_lossy(&small.stdout), "1048576");
 }
 
+/// Whether this host can enforce `max_processes` for the current user. It cannot for root
+/// with neither a writable pids cgroup nor a seccomp listener, and then the sandbox refuses.
+fn process_cap_enforceable() -> bool {
+    let limits = agent_sandbox::policy::Limits {
+        max_processes: Some(16),
+        ..Default::default()
+    };
+    agent_sandbox::limits::plan(&limits).process_cap
+        != agent_sandbox::limits::ProcessCap::Unenforceable
+}
+
+/// CI runs this suite as root in containers built to exercise one mechanism each and names
+/// the one it expects, so a silent fall-through to another path fails the build.
+#[test]
+fn process_cap_mechanism_matches_the_environment() {
+    use agent_sandbox::limits::ProcessCap;
+    let Ok(expected) = std::env::var("AGENT_SANDBOX_EXPECT_PROCESS_CAP") else {
+        return;
+    };
+    let limits = agent_sandbox::policy::Limits {
+        max_processes: Some(16),
+        ..Default::default()
+    };
+    let actual = agent_sandbox::limits::plan(&limits).process_cap;
+    let wanted = match expected.as_str() {
+        "rlimit" => ProcessCap::Rlimit,
+        "cgroup" => ProcessCap::Cgroup,
+        "forkgate" => ProcessCap::ForkGate,
+        "refused" => ProcessCap::Unenforceable,
+        other => panic!("unknown AGENT_SANDBOX_EXPECT_PROCESS_CAP {other:?}"),
+    };
+    assert_eq!(actual, wanted);
+}
+
 #[test]
 fn fork_bomb_is_bounded() {
     let fx = fixture(&with_limits("timeout_ms = 3000\nmax_processes = 16"));
-    let start = Instant::now();
-    let root_without_cgroup =
-        unsafe { libc::geteuid() } == 0 && !agent_sandbox::limits::cgroup_v2_pids_available();
-    // When running as uid 0 in a container without writable cgroup v2 `pids.max`, Linux ignores
-    // RLIMIT_NPROC for root, so containment relies on the parent's user-space /proc watchdog.
-    // Spawn a bounded burst (64 children) rather than an exponential bomb so running `cargo test`
-    // as root inside a restricted container never starves the container host's PID table.
-    let script = if root_without_cgroup {
-        "i=0; while [ $i -lt 64 ]; do sleep 2 & i=$((i+1)); done; wait; echo survived"
-    } else {
-        "bomb() { bomb | bomb & }; bomb; sleep 1; echo survived"
-    };
-    let out = fx.run(&["sh", "-c", script]);
-    assert!(out.executed);
-    if root_without_cgroup {
-        assert!(!String::from_utf8_lossy(&out.stdout).contains("survived"));
+    if !process_cap_enforceable() {
+        // Nothing in this environment can cap processes for root, so the command must not
+        // start at all: an unenforced limit is refused, never silently dropped.
+        let err = fx
+            .sandbox
+            .run(
+                &argv_of(&["sh", "-c", "echo started"]),
+                &RunOptions::default(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, agent_sandbox::SandboxError::LimitUnenforceable(_)),
+            "{err}"
+        );
+        return;
     }
+    let start = Instant::now();
+    // The same exponential bomb for every user and mechanism: RLIMIT_NPROC, a pids cgroup,
+    // or the seccomp fork gate must each stop it in the kernel.
+    let out = fx.run(&[
+        "sh",
+        "-c",
+        "bomb() { bomb | bomb & }; bomb; sleep 1; echo survived",
+    ]);
+    assert!(out.executed);
     assert!(start.elapsed() < Duration::from_secs(12));
     // The bomb's process group is emptied once run() returns. On Linux this is exact. On
     // macOS, under load, a few SIGKILLed members can sit in the kernel exit path for
@@ -177,11 +219,71 @@ fn fork_bomb_is_bounded() {
         }
     }
     let enforcement = out.enforcement.unwrap();
+    eprintln!("fork bomb stopped by: {}", enforcement.processes);
     assert!(
         enforcement.processes.contains("RLIMIT_NPROC")
             || enforcement.processes.contains("cgroup v2")
-            || enforcement.processes.contains("watchdog"),
+            || enforcement.processes.contains("seccomp fork gate"),
         "unexpected processes enforcement string: {}",
+        enforcement.processes
+    );
+}
+
+/// For root the cap is a hard ceiling, not a reaction: a command that tries to hold 48 tasks
+/// under a limit of 8 is sampled from outside while it runs and never holds more than 8,
+/// whether the limit comes from a pids cgroup or the seccomp fork gate. (For other users
+/// `RLIMIT_NPROC` counts every process of the uid, so the group ceiling is not exact.)
+#[cfg(target_os = "linux")]
+#[test]
+fn root_process_cap_is_never_exceeded() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    // SAFETY: geteuid has no failure modes.
+    if unsafe { libc::geteuid() } != 0 || !process_cap_enforceable() {
+        return;
+    }
+    let fx = fixture(&with_limits("timeout_ms = 8000\nmax_processes = 8"));
+    let marker = fx.scratch().join("pgid");
+    let done = Arc::new(AtomicBool::new(false));
+    let peak = Arc::new(AtomicU64::new(0));
+    let (done2, peak2, marker2) = (done.clone(), peak.clone(), marker.clone());
+    let sampler = std::thread::spawn(move || {
+        while !done2.load(Ordering::SeqCst) {
+            if let Some(pgid) = std::fs::read_to_string(&marker2)
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+            {
+                let n = agent_sandbox::limits::group_process_count(pgid);
+                peak2.fetch_max(n, Ordering::SeqCst);
+            }
+            std::thread::yield_now();
+        }
+    });
+    // The sandbox makes the command a process-group leader, so `$$` is the group id.
+    let out = fx.run(&[
+        "sh",
+        "-c",
+        "echo $$ > scratch/pgid; i=0; \
+         while [ $i -lt 48 ]; do sleep 1 & i=$((i+1)); done 2>/dev/null; wait",
+    ]);
+    done.store(true, Ordering::SeqCst);
+    sampler.join().unwrap();
+    assert!(out.executed);
+    let seen = peak.load(Ordering::SeqCst);
+    assert!(seen >= 2, "the sampler never observed the spawner: {seen}");
+    assert!(
+        seen <= 8,
+        "process group held {seen} tasks under a cap of 8"
+    );
+    let enforcement = out.enforcement.unwrap();
+    eprintln!(
+        "peak {seen} tasks under a cap of 8, enforced by: {} {:?}",
+        enforcement.processes, enforcement.notes
+    );
+    assert!(
+        enforcement.processes.contains("cgroup v2")
+            || enforcement.processes.contains("seccomp fork gate"),
+        "{}",
         enforcement.processes
     );
 }
