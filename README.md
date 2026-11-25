@@ -13,7 +13,7 @@
 
 ---
 
-> **Evidence level: unit tested.** The tests include hostile commands. In CI (the automated checks that run on every change), the suite also runs as the root user in three container setups (isolated Linux environments). No outside security audit has been done. No one else has reproduced the results, and the tool is not used in production. [What the levels mean](https://github.com/adeoluo#evidence-levels).
+> **Evidence level: unit tested.** The tests include hostile commands. In CI (the automated checks that run on every change), the suite also runs as the root user in three container setups (isolated Linux environments). No outside security audit has been done. No one else has reproduced the results, and the tool is not used in production.
 
 ## Highlights
 
